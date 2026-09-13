@@ -29,7 +29,6 @@ interface HomeScreenProps {
   onOpenUpdateNotes?: () => void;
   onOpenGiftBox?: () => void;
   onOpenScoutModal?: () => void;
-  onOpenTournamentModal?: () => void;
   unclaimedGiftsCount?: number;
   totalTicketsCount?: number;
   teams?: UserTeam[];
@@ -57,7 +56,6 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({
   hasActiveSpin,
   onOpenGiftBox,
   onOpenScoutModal,
-  onOpenTournamentModal,
   unclaimedGiftsCount = 0,
   totalTicketsCount = 0,
 }) => {
@@ -291,44 +289,6 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({
           </div>
           <ChevronRight className="w-5 h-5 text-slate-500 group-hover:text-indigo-400 group-hover:translate-x-1 transition-all" />
         </button>
-
-        {/* 5.2 OFFICIAL TOURNAMENT (お試し公式大会) */}
-        {onOpenTournamentModal && (
-          <button
-            id="btn-home-official-tournament"
-            onClick={() => {
-              soundManager.playButtonClick();
-              onOpenTournamentModal();
-            }}
-            className="w-full p-3.5 sm:p-4 rounded-2xl bg-gradient-to-r from-amber-950/80 via-slate-900 to-yellow-950/60 hover:from-amber-900/90 hover:to-slate-850 border border-amber-500/50 hover:border-amber-400 text-white font-heading font-bold text-base tracking-wide transition-all flex items-center justify-between group shadow-lg shadow-amber-950/40 relative overflow-hidden"
-          >
-            <div className="flex items-center gap-3.5">
-              <div className="w-10 h-10 rounded-xl bg-amber-500/20 text-amber-300 flex items-center justify-center border border-amber-500/40 shadow-inner group-hover:scale-105 transition-transform">
-                <Trophy className="w-5 h-5 text-amber-400 group-hover:rotate-6 transition-transform" />
-              </div>
-              <div className="text-left">
-                <div className="flex items-center gap-2">
-                  <span className="text-amber-200">🏆 公式大会</span>
-                  <span className="text-[9px] font-mono font-black px-2 py-0.2 rounded-full bg-gradient-to-r from-amber-500 to-yellow-500 text-slate-950 shadow-sm">
-                    お試し大会
-                  </span>
-                  <span className="text-[9px] font-mono font-bold px-1.5 py-0.2 rounded-full bg-emerald-500/20 text-emerald-300 border border-emerald-500/30">
-                    受付中
-                  </span>
-                </div>
-                <div className="text-xs text-slate-400 font-normal font-sans">
-                  第1回 FOOTBALL DRAFT CUP (戦術自動シミュレーション)
-                </div>
-              </div>
-            </div>
-            <div className="flex items-center gap-2">
-              <span className="text-xs font-mono font-bold px-2 py-0.5 rounded-full bg-amber-500/10 text-amber-300 border border-amber-500/30 hidden sm:inline-block">
-                9/8〜9/13
-              </span>
-              <ChevronRight className="w-5 h-5 text-slate-500 group-hover:text-amber-400 group-hover:translate-x-1 transition-all" />
-            </div>
-          </button>
-        )}
 
         {/* 5.5 REWARD SCOUT & PRESENT BOX ROW */}
         <div className="grid grid-cols-2 gap-2.5">

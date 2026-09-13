@@ -47,6 +47,7 @@ import {
   CheckCircle,
   HelpCircle,
   ArrowLeftRight,
+  Trophy,
 } from 'lucide-react';
 
 interface PitchSlot {

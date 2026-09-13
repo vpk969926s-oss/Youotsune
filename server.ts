@@ -164,10 +164,10 @@ const JST_OFFSET_MS = 9 * 60 * 60 * 1000;
 const ONE_WEEK_MS = 7 * 24 * 60 * 60 * 1000;
 const AGGREGATION_DURATION_MS = 60 * 60 * 1000; // 1 hour (00:00 - 01:00 JST)
 
-// Season 1 special window (2026-09-09 00:00:00 JST to 2026-09-13 23:59:59.999 JST)
-const SEASON_1_START_MS = Date.UTC(2026, 8, 8, 15, 0, 0); // 2026-09-09 00:00:00 JST
-const SEASON_1_END_MS = Date.UTC(2026, 8, 13, 14, 59, 59, 999); // 2026-09-13 23:59:59.999 JST
-const SEASON_2_START_MS = Date.UTC(2026, 8, 13, 15, 0, 0); // 2026-09-14 00:00:00 JST
+// Season 1 special window (2026-09-13 00:00:00 JST to 2026-09-20 23:59:59.999 JST)
+const SEASON_1_START_MS = Date.UTC(2026, 8, 12, 15, 0, 0); // 2026-09-13 00:00:00 JST
+const SEASON_1_END_MS = Date.UTC(2026, 8, 20, 14, 59, 59, 999); // 2026-09-20 23:59:59.999 JST
+const SEASON_2_START_MS = Date.UTC(2026, 8, 20, 15, 0, 0); // 2026-09-21 00:00:00 JST
 
 function formatWeekId(startMs: number): string {
   const d = new Date(startMs + JST_OFFSET_MS);
@@ -210,7 +210,7 @@ function getWeekSeasonInfo(timestamp: number = Date.now()): {
 
   // Aggregation window: exactly 1 hour following phase end (24:00〜25:00 JST = 00:00〜01:00 JST next day)
   const aggregationEndMs = endMs + AGGREGATION_DURATION_MS;
-  const weekId = seasonNum === 1 ? '2026-09-09_week' : formatWeekId(startMs);
+  const weekId = seasonNum === 1 ? '2026-09-13_week' : formatWeekId(startMs);
 
   let phase: 'ACTIVE' | 'AGGREGATING' | 'FINALIZED' = 'ACTIVE';
   let phaseTextJa = '対戦受付中';
@@ -250,7 +250,81 @@ async function startServer() {
 
   // 1. Health check
   app.get('/api/health', (req, res) => {
-    res.json({ status: 'ok', version: '1.3.2', timestamp: Date.now() });
+    res.json({ status: 'ok', version: '1.4.0', timestamp: Date.now() });
+  });
+
+  // ── SUPABASE ONLINE LEADERBOARD PROXY API ──
+  const SUPABASE_LEADERBOARD_URL = 'https://ihaiadukjycjdvaownpv.supabase.co';
+  const SUPABASE_LEADERBOARD_KEY = 'sb_publishable_dEjgitW3rRtpyGnqaIFeZg_2ZONcI-l';
+
+  // GET /api/leaderboard?limit=100
+  app.get('/api/leaderboard', async (req, res) => {
+    try {
+      const limit = Math.min(100, Math.max(1, parseInt(req.query.limit as string) || 50));
+      const targetUrl = `${SUPABASE_LEADERBOARD_URL}/rest/v1/leaderboard?select=id,created_at,player_name,score&player_name=not.like.PVP_MATCH*&player_name=not.like.TOURNAMENT_*&order=score.desc,created_at.asc&limit=${limit}`;
+
+      const response = await fetch(targetUrl, {
+        headers: {
+          apikey: SUPABASE_LEADERBOARD_KEY,
+          Authorization: `Bearer ${SUPABASE_LEADERBOARD_KEY}`,
+          'Content-Type': 'application/json',
+        },
+      });
+
+      if (!response.ok) {
+        const errorText = await response.text();
+        return res.status(response.status).json({ success: false, error: errorText });
+      }
+
+      const data = await response.json();
+      return res.json({ success: true, data });
+    } catch (err: any) {
+      console.error('Leaderboard GET error:', err);
+      return res.status(500).json({ success: false, error: err?.message || 'Server error' });
+    }
+  });
+
+  // POST /api/leaderboard
+  app.post('/api/leaderboard', async (req, res) => {
+    try {
+      const name = req.body.player_name || req.body.playerName;
+      const rawScore = req.body.score;
+      const score = typeof rawScore === 'number' ? rawScore : Number(rawScore);
+
+      if (!name || typeof name !== 'string' || !name.trim()) {
+        return res.status(400).json({ success: false, error: 'プレイヤー名を入力してください' });
+      }
+      if (typeof score !== 'number' || isNaN(score) || score < 0) {
+        return res.status(400).json({ success: false, error: '有効なスコアを指定してください' });
+      }
+
+      const targetUrl = `${SUPABASE_LEADERBOARD_URL}/rest/v1/leaderboard`;
+      const response = await fetch(targetUrl, {
+        method: 'POST',
+        headers: {
+          apikey: SUPABASE_LEADERBOARD_KEY,
+          Authorization: `Bearer ${SUPABASE_LEADERBOARD_KEY}`,
+          'Content-Type': 'application/json',
+          Prefer: 'return=representation',
+        },
+        body: JSON.stringify({
+          player_name: name.trim(),
+          score: Math.round(score),
+        }),
+      });
+
+      if (!response.ok) {
+        const errorText = await response.text();
+        return res.status(response.status).json({ success: false, error: errorText });
+      }
+
+      const insertedRows = await response.json();
+      const inserted = Array.isArray(insertedRows) ? insertedRows[0] : insertedRows;
+      return res.json({ success: true, data: inserted });
+    } catch (err: any) {
+      console.error('Leaderboard POST error:', err);
+      return res.status(500).json({ success: false, error: err?.message || 'Server error' });
+    }
   });
 
   // 2. Ranking Phase & Schedule Status (Server Authority)
@@ -509,8 +583,8 @@ async function startServer() {
     res.json({ success: true, users: list });
   });
 
-  // 6.5.3 Record match result (shared across all users)
-  app.post('/api/pvp/record-match', (req, res) => {
+  // 6.5.3 Record match result (shared across all users, persisted to disk and Supabase)
+  app.post('/api/pvp/record-match', async (req, res) => {
     try {
       const match = req.body;
       if (!match || !match.id || !match.challengerUserId || !match.opponentUserId) {
@@ -523,6 +597,26 @@ async function startServer() {
         serverPvPMatchesList.unshift(match);
       }
       savePvPMatchesToDisk();
+
+      // Persist to Supabase leaderboard table as PVP_MATCH record
+      try {
+        await fetch(`${SUPABASE_LEADERBOARD_URL}/rest/v1/leaderboard`, {
+          method: 'POST',
+          headers: {
+            apikey: SUPABASE_LEADERBOARD_KEY,
+            Authorization: `Bearer ${SUPABASE_LEADERBOARD_KEY}`,
+            'Content-Type': 'application/json',
+            Prefer: 'return=minimal',
+          },
+          body: JSON.stringify({
+            player_name: 'PVP_MATCH:' + JSON.stringify(match),
+            score: match.result === 'WIN' ? 3 : match.result === 'DRAW' ? 1 : 0,
+          }),
+        });
+      } catch (sbErr) {
+        console.warn('Supabase match push note:', sbErr);
+      }
+
       res.json({ success: true, matchId: match.id, totalMatches: serverPvPMatchesList.length });
     } catch (e: any) {
       res.status(500).json({ error: e?.message || 'Server error' });
@@ -555,12 +649,7 @@ async function startServer() {
     let filtered = serverPvPMatchesList;
     if (targetSeason === 1) {
       filtered = filtered.filter((m) => 
-        m.season === 1 ||
-        m.seasonNumber === 1 ||
-        m.weekId === '2026-09-09_week' ||
-        m.weekId === 'WEEK_1' ||
-        !m.season ||
-        (m.timestamp >= SEASON_1_START_MS && m.timestamp <= SEASON_1_END_MS)
+        m.timestamp >= SEASON_1_START_MS && m.timestamp <= SEASON_1_END_MS
       );
     } else if (weekId) {
       filtered = filtered.filter((m) => m.weekId === weekId || m.season === targetSeason || m.seasonNumber === targetSeason);
@@ -583,13 +672,10 @@ async function startServer() {
 
     let seasonMatches = serverPvPMatchesList;
     if (targetSeason === 1) {
+      // 1st PvP Ranking: 2026-09-13 00:00 JST to 2026-09-20 23:59 JST
+      // Only matches starting from 2026-09-13 00:00 JST are aggregated into Season 1 ranking
       seasonMatches = seasonMatches.filter((m) =>
-        m.season === 1 ||
-        m.seasonNumber === 1 ||
-        m.weekId === '2026-09-09_week' ||
-        m.weekId === 'WEEK_1' ||
-        !m.season ||
-        (m.timestamp >= SEASON_1_START_MS && m.timestamp <= SEASON_1_END_MS)
+        m.timestamp >= SEASON_1_START_MS && m.timestamp <= SEASON_1_END_MS
       );
     } else if (weekId) {
       seasonMatches = seasonMatches.filter((m) => m.weekId === weekId || m.season === targetSeason || m.seasonNumber === targetSeason);
@@ -838,13 +924,13 @@ async function startServer() {
   }
 
   // Official Tournament Schedule:
-  // Registration: 2026-09-09 00:00:00 JST to 2026-09-13 23:59:59.999 JST
-  // Match period: 2026-09-14 00:00:00 JST to 2026-09-20 23:59:59.999 JST
+  // Registration: 2026-09-13 00:00:00 JST to 2026-09-18 23:59:59.999 JST
+  // Match period: 2026-09-19 00:00:00 JST to 2026-09-25 23:59:59.999 JST
   const TOURNAMENT_ID = 'FD_CUP_001';
-  const TOURNAMENT_REG_START_MS = Date.UTC(2026, 8, 8, 15, 0, 0); // 2026-09-09 00:00 JST
-  const TOURNAMENT_REG_END_MS = Date.UTC(2026, 8, 13, 14, 59, 59, 999); // 2026-09-13 23:59 JST
-  const TOURNAMENT_MATCH_START_MS = Date.UTC(2026, 8, 13, 15, 0, 0); // 2026-09-14 00:00 JST
-  const TOURNAMENT_MATCH_END_MS = Date.UTC(2026, 8, 20, 14, 59, 59, 999);
+  const TOURNAMENT_REG_START_MS = Date.UTC(2026, 8, 12, 15, 0, 0); // 2026-09-13 00:00:00 JST
+  const TOURNAMENT_REG_END_MS = Date.UTC(2026, 8, 18, 14, 59, 59, 999); // 2026-09-18 23:59:59.999 JST
+  const TOURNAMENT_MATCH_START_MS = Date.UTC(2026, 8, 18, 15, 0, 0); // 2026-09-19 00:00:00 JST
+  const TOURNAMENT_MATCH_END_MS = Date.UTC(2026, 8, 25, 14, 59, 59, 999); // 2026-09-25 23:59:59.999 JST
 
   const TOURNAMENT_ENTRIES_FILE = path.join(DATA_DIR, 'tournament_entries.json');
   const TOURNAMENT_STATE_FILE = path.join(DATA_DIR, 'tournament_state.json');
@@ -1094,6 +1180,25 @@ async function startServer() {
 
     tournamentEntriesMap.set(userId, newEntry);
     saveTournamentEntriesToDisk();
+
+    // Persist to Supabase leaderboard table as TOURNAMENT_ENTRY record
+    try {
+      fetch(`${SUPABASE_LEADERBOARD_URL}/rest/v1/leaderboard`, {
+        method: 'POST',
+        headers: {
+          apikey: SUPABASE_LEADERBOARD_KEY,
+          Authorization: `Bearer ${SUPABASE_LEADERBOARD_KEY}`,
+          'Content-Type': 'application/json',
+          Prefer: 'return=minimal',
+        },
+        body: JSON.stringify({
+          player_name: 'TOURNAMENT_ENTRY:' + JSON.stringify(newEntry),
+          score: newEntry.teamOvr || 85,
+        }),
+      }).catch((e) => console.warn('Supabase entry push error note:', e));
+    } catch (sbErr) {
+      console.warn('Supabase tournament entry note:', sbErr);
+    }
 
     // Also synchronize into serverPvPUsersMap so they are discoverable in online PvP
     if (!serverPvPUsersMap.has(userId) || serverPvPUsersMap.get(userId)?.team?.players?.length !== 11) {
@@ -1849,6 +1954,120 @@ async function startServer() {
       },
     });
   });
+
+  // 8. Online Sync & Diagnostics Endpoint
+  let lastSupabaseSyncTimestamp = 0;
+  let lastSupabaseSyncError: string | null = null;
+  let lastSupabaseMatchesCount = 0;
+  let lastSupabaseEntriesCount = 0;
+
+  async function syncFromSupabase() {
+    try {
+      // 1. Sync PvP matches from Supabase leaderboard table
+      const matchesUrl = `${SUPABASE_LEADERBOARD_URL}/rest/v1/leaderboard?select=id,created_at,player_name,score&player_name=like.PVP_MATCH*&order=created_at.desc&limit=500`;
+      const matchesRes = await fetch(matchesUrl, {
+        headers: {
+          apikey: SUPABASE_LEADERBOARD_KEY,
+          Authorization: `Bearer ${SUPABASE_LEADERBOARD_KEY}`,
+          'Content-Type': 'application/json',
+        },
+      });
+      if (matchesRes.ok) {
+        const rows = await matchesRes.json();
+        lastSupabaseMatchesCount = rows.length;
+        rows.forEach((row: any) => {
+          try {
+            const raw = row.player_name.replace(/^PVP_MATCH:/, '');
+            const matchObj: ServerPvPMatch = JSON.parse(raw);
+            if (matchObj && matchObj.id) {
+              const existingIdx = serverPvPMatchesList.findIndex((m) => m.id === matchObj.id);
+              if (existingIdx < 0) {
+                serverPvPMatchesList.push(matchObj);
+              }
+            }
+          } catch {}
+        });
+        savePvPMatchesToDisk();
+      }
+
+      // 2. Sync tournament entries from Supabase leaderboard table
+      const entriesUrl = `${SUPABASE_LEADERBOARD_URL}/rest/v1/leaderboard?select=id,created_at,player_name,score&player_name=like.TOURNAMENT_ENTRY*&order=created_at.desc&limit=200`;
+      const entriesRes = await fetch(entriesUrl, {
+        headers: {
+          apikey: SUPABASE_LEADERBOARD_KEY,
+          Authorization: `Bearer ${SUPABASE_LEADERBOARD_KEY}`,
+          'Content-Type': 'application/json',
+        },
+      });
+      if (entriesRes.ok) {
+        const rows = await entriesRes.json();
+        lastSupabaseEntriesCount = rows.length;
+        rows.forEach((row: any) => {
+          try {
+            const raw = row.player_name.replace(/^TOURNAMENT_ENTRY:/, '');
+            const entryObj: ServerTournamentEntry = JSON.parse(raw);
+            if (entryObj && entryObj.userId) {
+              if (!tournamentEntriesMap.has(entryObj.userId)) {
+                tournamentEntriesMap.set(entryObj.userId, entryObj);
+              }
+            }
+          } catch {}
+        });
+        saveTournamentEntriesToDisk();
+      }
+
+      lastSupabaseSyncTimestamp = Date.now();
+      lastSupabaseSyncError = null;
+    } catch (err: any) {
+      console.warn('Supabase sync note:', err?.message);
+      lastSupabaseSyncError = err?.message || 'Supabase sync error';
+    }
+  }
+
+  // Debug Diagnostics API for Online Synchronization
+  app.get('/api/sync/debug', (req, res) => {
+    const now = Date.now();
+    const jstDate = new Date(now + JST_OFFSET_MS);
+    const jstString = jstDate.toISOString().replace('T', ' ').replace('Z', ' JST');
+    const weekInfo = getWeekSeasonInfo(now);
+
+    res.json({
+      success: true,
+      timestamp: now,
+      serverTimeJst: jstString,
+      supabase: {
+        url: SUPABASE_LEADERBOARD_URL,
+        connected: !lastSupabaseSyncError,
+        lastSyncTime: lastSupabaseSyncTimestamp > 0
+          ? new Date(lastSupabaseSyncTimestamp + JST_OFFSET_MS).toISOString().replace('T', ' ').replace('Z', ' JST')
+          : '未同期',
+        lastError: lastSupabaseSyncError,
+        matchesInSupabase: lastSupabaseMatchesCount,
+        tournamentEntriesInSupabase: lastSupabaseEntriesCount,
+      },
+      pvp: {
+        totalMatchesInMemory: serverPvPMatchesList.length,
+        currentSeason: weekInfo.seasonNumber,
+        seasonStartJst: new Date(weekInfo.startMs + JST_OFFSET_MS).toISOString().replace('T', ' ').replace('Z', ' JST'),
+        seasonEndJst: new Date(weekInfo.endMs + JST_OFFSET_MS).toISOString().replace('T', ' ').replace('Z', ' JST'),
+        phase: weekInfo.phase,
+        phaseTextJa: weekInfo.phaseTextJa,
+        matchAcceptanceOpen: weekInfo.matchAcceptanceOpen,
+      },
+      tournament: {
+        tournamentId: TOURNAMENT_ID,
+        status: serverTournamentStatus,
+        entryCount: tournamentEntriesMap.size,
+        regStartJst: new Date(TOURNAMENT_REG_START_MS + JST_OFFSET_MS).toISOString().replace('T', ' ').replace('Z', ' JST'),
+        regEndJst: new Date(TOURNAMENT_REG_END_MS + JST_OFFSET_MS).toISOString().replace('T', ' ').replace('Z', ' JST'),
+        matchStartJst: new Date(TOURNAMENT_MATCH_START_MS + JST_OFFSET_MS).toISOString().replace('T', ' ').replace('Z', ' JST'),
+      },
+    });
+  });
+
+  // Perform initial Supabase sync and start 10-minute server-side sync interval
+  syncFromSupabase();
+  setInterval(syncFromSupabase, 10 * 60 * 1000);
 
   // Vite middleware for development
   if (process.env.NODE_ENV !== 'production') {

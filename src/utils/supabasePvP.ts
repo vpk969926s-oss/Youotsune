@@ -1216,6 +1216,16 @@ export async function saveMatchRecordToSupabase(
     console.warn('Supabase DB matches insert note:', e);
   }
 
+  // 3.5 Persist match in Supabase leaderboard table (Online single-store fallback)
+  try {
+    await supabase.from('leaderboard').insert({
+      player_name: 'PVP_MATCH:' + JSON.stringify(updatedRecord),
+      score: updatedRecord.result === 'WIN' ? 3 : updatedRecord.result === 'DRAW' ? 1 : 0,
+    });
+  } catch (e) {
+    console.warn('Supabase leaderboard match insert note:', e);
+  }
+
   // 4. Save to server authority (shared persistent DB across all users)
   await recordMatchToServer(updatedRecord);
 }
@@ -1247,6 +1257,37 @@ export async function fetchMatchHistoryFromSupabase(
     }
   } catch (e) {
     console.warn('Local load match error', e);
+  }
+
+  // 1.5 Query Supabase leaderboard table for PVP_MATCH
+  try {
+    const { data: lbData, error: lbError } = await supabase
+      .from('leaderboard')
+      .select('id, created_at, player_name, score')
+      .like('player_name', 'PVP_MATCH:%')
+      .order('created_at', { ascending: false })
+      .limit(300);
+
+    if (!lbError && lbData) {
+      lbData.forEach((row: any) => {
+        try {
+          const raw = row.player_name.replace(/^PVP_MATCH:/, '');
+          const matchObj: BetaMatchRecord = JSON.parse(raw);
+          if (
+            matchObj &&
+            matchObj.id &&
+            (matchObj.challengerUserId === currentUserId || matchObj.opponentUserId === currentUserId)
+          ) {
+            matchesMap.set(matchObj.id, {
+              ...matchObj,
+              season: matchObj.season || getSeasonNumberForTimestamp(matchObj.timestamp),
+            });
+          }
+        } catch {}
+      });
+    }
+  } catch (e) {
+    console.warn('Fetch match history from Supabase leaderboard note:', e);
   }
 
   // 2. Query Supabase DB matches table
@@ -1633,6 +1674,40 @@ export async function fetchWeeklyStandingsFromSupabase(
     }
   } catch (e) {
     console.warn('Supabase standings matches query note:', e);
+  }
+
+  // 3.2 Query Supabase leaderboard table for PVP_MATCH records
+  try {
+    const { data: lbMatches, error: lbErr } = await supabase
+      .from('leaderboard')
+      .select('id, created_at, player_name, score')
+      .like('player_name', 'PVP_MATCH:%')
+      .order('created_at', { ascending: false })
+      .limit(500);
+
+    if (!lbErr && lbMatches) {
+      lbMatches.forEach((row: any) => {
+        try {
+          const raw = row.player_name.replace(/^PVP_MATCH:/, '');
+          const matchObj: BetaMatchRecord = JSON.parse(raw);
+          if (matchObj && matchObj.id) {
+            const matchesTimeWindow =
+              matchObj.timestamp >= seasonInfo.startDateMs &&
+              matchObj.timestamp <= seasonInfo.endDateMs;
+            const matchesType = matchType === 'ALL' || matchObj.matchType === matchType;
+            if (matchesTimeWindow && matchesType) {
+              seasonMatchesMap.set(matchObj.id, {
+                ...matchObj,
+                weekId: targetWeekId,
+                season: seasonNumber,
+              });
+            }
+          }
+        } catch {}
+      });
+    }
+  } catch (e) {
+    console.warn('Supabase leaderboard standings scan note:', e);
   }
 
   // 3.5 Query all matches from server authority (shared across all users)

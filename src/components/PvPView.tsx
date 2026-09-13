@@ -82,6 +82,7 @@ import {
   Medal,
   Award,
   FastForward,
+  Database,
 } from 'lucide-react';
 
 interface PvPViewProps {
@@ -90,6 +91,7 @@ interface PvPViewProps {
   language: Language;
   onBackToDraft?: () => void;
   onNavigate?: (tab: 'home' | 'draft' | 'team' | 'history' | 'pvp') => void;
+  onOpenSyncDebug?: () => void;
 }
 
 type PvPTab = 'lobby' | 'tactics' | 'friends' | 'standings' | 'history';
@@ -120,6 +122,7 @@ export const PvPView: React.FC<PvPViewProps> = ({
   language,
   onBackToDraft,
   onNavigate,
+  onOpenSyncDebug,
 }) => {
   const [activeTab, setActiveTab] = useState<PvPTab>('lobby');
 
@@ -2075,21 +2078,34 @@ export const PvPView: React.FC<PvPViewProps> = ({
               )}
             </div>
 
-            <button
-              onClick={async () => {
-                soundManager.playButtonClick();
-                await performFullOnlineSync(true);
-                await loadStandingsData(selectedSeason, standingsFilter);
-                setStandingsNotice('全端末の最新ランキングを即座に集計・同期完了しました！');
-                setTimeout(() => setStandingsNotice(null), 3000);
-              }}
-              disabled={isLoadingStandings || syncStatus.state === 'SYNCING'}
-              className="px-3 py-1.5 rounded-xl bg-indigo-600/30 hover:bg-indigo-600/50 border border-indigo-400/40 text-indigo-200 hover:text-white text-xs font-bold transition-all flex items-center gap-1.5 shadow"
-              title="今すぐ最新データを取得して同期"
-            >
-              <RefreshCw className={`w-3.5 h-3.5 ${(isLoadingStandings || syncStatus.state === 'SYNCING') ? 'animate-spin text-amber-400' : ''}`} />
-              <span>今すぐ手動同期</span>
-            </button>
+            <div className="flex items-center gap-2">
+              {onOpenSyncDebug && (
+                <button
+                  id="pvp-standings-sync-debug-btn"
+                  onClick={onOpenSyncDebug}
+                  className="px-3 py-1.5 rounded-xl bg-slate-800 hover:bg-slate-700 border border-emerald-500/30 text-emerald-400 hover:text-emerald-300 text-xs font-bold transition-all flex items-center gap-1.5 shadow"
+                  title="オンラインDB接続状態・同期デバッグ情報を確認"
+                >
+                  <Database className="w-3.5 h-3.5 text-emerald-400" />
+                  <span className="hidden sm:inline">同期デバッグ</span>
+                </button>
+              )}
+              <button
+                onClick={async () => {
+                  soundManager.playButtonClick();
+                  await performFullOnlineSync(true);
+                  await loadStandingsData(selectedSeason, standingsFilter);
+                  setStandingsNotice('全端末の最新ランキングを即座に集計・同期完了しました！');
+                  setTimeout(() => setStandingsNotice(null), 3000);
+                }}
+                disabled={isLoadingStandings || syncStatus.state === 'SYNCING'}
+                className="px-3 py-1.5 rounded-xl bg-indigo-600/30 hover:bg-indigo-600/50 border border-indigo-400/40 text-indigo-200 hover:text-white text-xs font-bold transition-all flex items-center gap-1.5 shadow"
+                title="今すぐ最新データを取得して同期"
+              >
+                <RefreshCw className={`w-3.5 h-3.5 ${(isLoadingStandings || syncStatus.state === 'SYNCING') ? 'animate-spin text-amber-400' : ''}`} />
+                <span>今すぐ手動同期</span>
+              </button>
+            </div>
           </div>
 
           {/* Standings Feedback Notice */}

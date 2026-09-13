@@ -35,9 +35,16 @@ export interface SyncManagerStatus {
   lastSyncTimestamp: number;
   nextScheduledSyncTimestamp: number;
   secondsUntilNextSync: number;
+  secondsRemaining?: number;
   lastSyncTimeString: string;
+  lastSyncJstString: string;
   errorMessage?: string | null;
   totalSyncedMatches?: number;
+  lastFetchedMatchesCount: number;
+  lastFetchedStandingsCount: number;
+  lastFetchedTournamentEntriesCount: number;
+  supabaseConnected: boolean;
+  realtimeConnected: boolean;
 }
 
 let syncState: SyncState = 'IDLE';
@@ -47,7 +54,29 @@ let masterIntervalId: any = null;
 let retryTimeoutId: any = null;
 let isInitialized = false;
 
+let lastMatchesCount = 0;
+let lastStandingsCount = 0;
+let lastEntriesCount = 0;
+let isSupabaseOk = true;
+let isRealtimeOk = true;
+
 const statusListeners = new Set<(status: SyncManagerStatus) => void>();
+
+/**
+ * Format timestamp in JST (YYYY/MM/DD HH:mm:ss JST)
+ */
+export function formatJstTime(ts: number): string {
+  if (!ts || ts <= 0) return '未同期';
+  const JST_OFFSET = 9 * 60 * 60 * 1000;
+  const d = new Date(ts + JST_OFFSET);
+  const y = d.getUTCFullYear();
+  const mo = String(d.getUTCMonth() + 1).padStart(2, '0');
+  const day = String(d.getUTCDate()).padStart(2, '0');
+  const h = String(d.getUTCHours()).padStart(2, '0');
+  const m = String(d.getUTCMinutes()).padStart(2, '0');
+  const s = String(d.getUTCSeconds()).padStart(2, '0');
+  return `${y}/${mo}/${day} ${h}:${m}:${s} JST`;
+}
 
 /**
  * Calculate the next 10-minute clock boundary (e.g. :00, :10, :20, :30, :40, :50)
@@ -86,8 +115,15 @@ export function getSyncManagerStatus(): SyncManagerStatus {
     lastSyncTimestamp,
     nextScheduledSyncTimestamp: nextScheduled,
     secondsUntilNextSync: diffSec,
+    secondsRemaining: diffSec,
     lastSyncTimeString: formatSyncTime(lastSyncTimestamp),
+    lastSyncJstString: formatJstTime(lastSyncTimestamp),
     errorMessage: lastErrorMessage,
+    lastFetchedMatchesCount: lastMatchesCount,
+    lastFetchedStandingsCount: lastStandingsCount,
+    lastFetchedTournamentEntriesCount: lastEntriesCount,
+    supabaseConnected: isSupabaseOk,
+    realtimeConnected: isRealtimeOk,
   };
 }
 
@@ -147,7 +183,11 @@ export async function performFullOnlineSync(isManual: boolean = false): Promise<
 
     // 2. Fetch authoritative weekly standings (current season)
     try {
-      await fetchWeeklyStandingsWithSyncInfo(1, 'ALL', userProfile);
+      const standingsRes = await fetchWeeklyStandingsWithSyncInfo(1, 'ALL', userProfile);
+      if (standingsRes && Array.isArray(standingsRes.standings)) {
+        lastStandingsCount = standingsRes.standings.length;
+        lastMatchesCount = standingsRes.totalMatches;
+      }
     } catch (err) {
       console.warn('Weekly standings sync notice:', err);
     }
@@ -155,7 +195,10 @@ export async function performFullOnlineSync(isManual: boolean = false): Promise<
     // 3. Fetch match history
     try {
       if (userProfile?.userId) {
-        await fetchMatchHistoryFromSupabase(userProfile.userId);
+        const history = await fetchMatchHistoryFromSupabase(userProfile.userId);
+        if (history && history.length > 0 && lastMatchesCount === 0) {
+          lastMatchesCount = history.length;
+        }
       }
     } catch (err) {
       console.warn('Match history sync notice:', err);
@@ -172,10 +215,16 @@ export async function performFullOnlineSync(isManual: boolean = false): Promise<
 
     // 5. Fetch official tournament authoritative state & entries
     try {
-      await fetchAuthoritativeTournamentState();
+      const tourneyState = await fetchAuthoritativeTournamentState();
+      if (tourneyState && Array.isArray(tourneyState.entries)) {
+        lastEntriesCount = tourneyState.entries.length;
+      }
     } catch (err) {
       console.warn('Tournament state sync notice:', err);
     }
+
+    isSupabaseOk = true;
+    isRealtimeOk = true;
 
     // Notify match and ranking listeners to re-render fresh data
     notifyMatchUpdates();

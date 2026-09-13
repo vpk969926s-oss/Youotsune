@@ -16,11 +16,13 @@ import { evaluateTacticalAdvantage, pickRealisticGoalScorer } from './pvpEngine'
 import { getPlayerHeight } from '../data/playerHeights';
 import { getTeamEffectiveOvr } from './positionEngine';
 
-// JST Dates for FD_CUP_001
-export const FD_CUP_001_REG_START_MS = Date.UTC(2026, 8, 8, 15, 0, 0); // 2026-09-09 00:00:00 JST
-export const FD_CUP_001_REG_END_MS = Date.UTC(2026, 8, 13, 14, 59, 59, 999); // 2026-09-13 23:59:59.999 JST
-export const FD_CUP_001_MATCH_START_MS = Date.UTC(2026, 8, 13, 15, 0, 0); // 2026-09-14 00:00:00 JST
-export const FD_CUP_001_MATCH_END_MS = Date.UTC(2026, 8, 20, 14, 59, 59, 999); // 2026-09-20 23:59:59.999 JST
+// JST Dates for FD_CUP_001 (Strict JST: UTC+9)
+// Entry period: 2026-09-13 00:00:00 JST to 2026-09-18 23:59:59.999 JST
+// Tournament Start: 2026-09-19 00:00:00 JST to 2026-09-25 23:59:59.999 JST
+export const FD_CUP_001_REG_START_MS = Date.UTC(2026, 8, 12, 15, 0, 0); // 2026-09-13 00:00:00 JST
+export const FD_CUP_001_REG_END_MS = Date.UTC(2026, 8, 18, 14, 59, 59, 999); // 2026-09-18 23:59:59.999 JST
+export const FD_CUP_001_MATCH_START_MS = Date.UTC(2026, 8, 18, 15, 0, 0); // 2026-09-19 00:00:00 JST
+export const FD_CUP_001_MATCH_END_MS = Date.UTC(2026, 8, 25, 14, 59, 59, 999); // 2026-09-25 23:59:59.999 JST
 
 export const INITIAL_TOURNAMENT_FD_CUP_001: TournamentDefinition = {
   tournamentId: 'FD_CUP_001',

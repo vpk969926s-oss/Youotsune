@@ -1,8 +1,9 @@
-import React from 'react';
+import React, { useState, useEffect } from 'react';
 import { GameMode, Language } from '../types';
 import { TRANSLATIONS } from '../utils/translations';
 import { soundManager } from '../utils/audio';
-import { Volume2, VolumeX, Settings, HelpCircle, History, Shield, Users, Home, Zap, Swords, Gift, Ticket } from 'lucide-react';
+import { Volume2, VolumeX, Settings, HelpCircle, History, Shield, Users, Home, Zap, Swords, Gift, Ticket, Trophy, Radio, Database } from 'lucide-react';
+import { subscribeToSyncStatus, SyncManagerStatus, getSyncManagerStatus } from '../utils/onlineSyncManager';
 
 interface HeaderProps {
   mode: GameMode;
@@ -18,6 +19,7 @@ interface HeaderProps {
   onToggleSound: () => void;
   onOpenGiftBox?: () => void;
   onOpenScoutModal?: () => void;
+  onOpenSyncDebug?: () => void;
   unclaimedGiftsCount?: number;
   totalTicketsCount?: number;
 }
@@ -36,10 +38,19 @@ export const Header: React.FC<HeaderProps> = ({
   onToggleSound,
   onOpenGiftBox,
   onOpenScoutModal,
+  onOpenSyncDebug,
   unclaimedGiftsCount = 0,
   totalTicketsCount = 0,
 }) => {
   const t = TRANSLATIONS[language];
+  const [syncStatus, setSyncStatus] = useState<SyncManagerStatus>(getSyncManagerStatus());
+
+  useEffect(() => {
+    const unsub = subscribeToSyncStatus((status) => {
+      setSyncStatus(status);
+    });
+    return () => unsub();
+  }, []);
 
   return (
     <header id="main-header" className="sticky top-0 z-40 bg-slate-950/90 backdrop-blur-md border-b border-emerald-500/20 shadow-lg">
@@ -207,8 +218,44 @@ export const Header: React.FC<HeaderProps> = ({
           </button>
         </div>
 
-        {/* Right: Sound, Language, Help, Settings, Gift Box, Scout */}
+        {/* Right: Sound, Language, Help, Settings, Gift Box, Scout, Leaderboard */}
         <div className="flex items-center gap-1.5">
+          {/* Online Sync Status & Debug Pill */}
+          {onOpenSyncDebug && (
+            <button
+              id="header-sync-debug-btn"
+              onClick={() => {
+                soundManager.playButtonClick();
+                onOpenSyncDebug();
+              }}
+              title="オンラインDB同期状態・デバッグ情報 (Supabase + Realtime + 10分周期)"
+              className={`relative px-2 py-1.5 rounded-lg border text-xs font-semibold flex items-center gap-1.5 transition-all ${
+                syncStatus.state === 'ERROR'
+                  ? 'bg-rose-950/60 border-rose-500/50 text-rose-300'
+                  : syncStatus.state === 'SYNCING'
+                  ? 'bg-amber-950/60 border-amber-500/50 text-amber-300'
+                  : 'bg-emerald-950/60 hover:bg-emerald-900/60 border-emerald-500/40 text-emerald-300 hover:text-emerald-100'
+              }`}
+            >
+              <span
+                className={`w-2 h-2 rounded-full ${
+                  syncStatus.state === 'ERROR'
+                    ? 'bg-rose-500'
+                    : syncStatus.state === 'SYNCING'
+                    ? 'bg-amber-400 animate-spin'
+                    : 'bg-emerald-400 animate-pulse'
+                }`}
+              />
+              <span className="hidden xl:inline text-[11px]">
+                {syncStatus.state === 'SYNCING'
+                  ? '同期中...'
+                  : syncStatus.state === 'ERROR'
+                  ? '同期エラー'
+                  : '10分同期'}
+              </span>
+            </button>
+          )}
+
           {/* Scout Tickets Button */}
           {onOpenScoutModal && (
             <button

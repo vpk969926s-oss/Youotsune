@@ -232,6 +232,37 @@ export async function fetchAuthoritativeTournamentState(
     console.warn('Supabase fallback tournament check notice:', e);
   }
 
+  // Supabase leaderboard table query for TOURNAMENT_ENTRY records
+  try {
+    const { data: lbEntries, error: lbErr } = await supabase
+      .from('leaderboard')
+      .select('id, created_at, player_name, score')
+      .like('player_name', 'TOURNAMENT_ENTRY:%')
+      .order('created_at', { ascending: false })
+      .limit(100);
+
+    if (!lbErr && lbEntries && lbEntries.length > 0) {
+      const entriesMap = new Map<string, TournamentEntry>();
+      // Keep existing entries first
+      currentTournamentState.entries.forEach((e) => entriesMap.set(e.userId, e));
+
+      lbEntries.forEach((row: any) => {
+        try {
+          const raw = row.player_name.replace(/^TOURNAMENT_ENTRY:/, '');
+          const entryObj = sanitizeTournamentEntry(JSON.parse(raw));
+          if (entryObj && entryObj.userId) {
+            entriesMap.set(entryObj.userId, entryObj);
+          }
+        } catch {}
+      });
+
+      currentTournamentState.entries = Array.from(entriesMap.values());
+      currentTournamentState.definition.entryCount = currentTournamentState.entries.length;
+    }
+  } catch (e) {
+    console.warn('Supabase leaderboard tournament entry query notice:', e);
+  }
+
   // Re-evaluate status based on current time
   const evaluatedStatus = determineTournamentStatus(
     currentTournamentState.currentServerTimeMs || Date.now(),
@@ -465,6 +496,16 @@ export async function enterOfficialTournament(params: {
     );
   } catch (e) {
     console.warn('Supabase DB tournament entry insert warning', e);
+  }
+
+  // Save to Supabase leaderboard table (Online single-store fallback)
+  try {
+    await supabase.from('leaderboard').insert({
+      player_name: 'TOURNAMENT_ENTRY:' + JSON.stringify(newEntry),
+      score: newEntry.teamOvr || 85,
+    });
+  } catch (e) {
+    console.warn('Supabase leaderboard tournament entry insert note:', e);
   }
 
   return { success: true, entry: newEntry };

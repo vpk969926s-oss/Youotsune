@@ -33,14 +33,15 @@ export type SeasonPhase = 'ACTIVE' | 'AGGREGATING' | 'FINALIZED';
 // JST Offset in milliseconds: +9 hours
 export const JST_OFFSET_MS = 9 * 60 * 60 * 1000;
 
-// v1.3.2 Base Season Start: 2026-09-09 00:00:00 JST (2026-09-08 15:00:00 UTC)
-export const V132_START_MS = Date.UTC(2026, 8, 8, 15, 0, 0); // 2026-09-09 00:00:00 JST
-export const V130_START_MS = V132_START_MS;
-export const SEASON_1_START_MS = V132_START_MS;
+// v1.4.0 Season 1: 2026-09-13 00:00:00 JST (2026-09-12 15:00:00 UTC) to 2026-09-20 23:59:59.999 JST
+export const V140_START_MS = Date.UTC(2026, 8, 12, 15, 0, 0); // 2026-09-13 00:00:00 JST
+export const V132_START_MS = V140_START_MS;
+export const V130_START_MS = V140_START_MS;
+export const SEASON_1_START_MS = V140_START_MS;
 
-// First season is from 2026-09-09 00:00:00 JST to 2026-09-13 23:59:59.999 JST (5 days)
-export const SEASON_1_END_MS = Date.UTC(2026, 8, 13, 14, 59, 59, 999);
-export const SEASON_2_START_MS = Date.UTC(2026, 8, 13, 15, 0, 0); // 2026-09-14 00:00:00 JST
+// First season is from 2026-09-13 00:00:00 JST to 2026-09-20 23:59:59.999 JST (7 days)
+export const SEASON_1_END_MS = Date.UTC(2026, 8, 20, 14, 59, 59, 999);
+export const SEASON_2_START_MS = Date.UTC(2026, 8, 20, 15, 0, 0); // 2026-09-21 00:00:00 JST
 
 export const ONE_WEEK_MS = 7 * 24 * 60 * 60 * 1000;
 export const AGGREGATION_DURATION_MS = 60 * 60 * 1000; // 1 hour (00:00 - 01:00 JST)
@@ -84,7 +85,7 @@ export function getSeasonNumberForTimestamp(timestamp: number): number {
 export function getWeekIdForTimestamp(timestamp: number): string {
   const sNum = getSeasonNumberForTimestamp(timestamp);
   if (sNum <= 0) {
-    return 'legacy_pre_2026-09-09_week';
+    return 'legacy_pre_2026-09-13_week';
   }
   const { weekId } = getSeasonRange(sNum);
   return weekId;
@@ -111,7 +112,7 @@ export function getSeasonRange(seasonNum: number): {
       startMs: 0,
       endMs: SEASON_1_START_MS - 1,
       aggregationEndMs: SEASON_1_START_MS - 1,
-      weekId: 'legacy_pre_2026-09-09_week',
+      weekId: 'legacy_pre_2026-09-13_week',
     };
   }
 
@@ -120,7 +121,7 @@ export function getSeasonRange(seasonNum: number): {
       startMs: SEASON_1_START_MS,
       endMs: SEASON_1_END_MS,
       aggregationEndMs: SEASON_1_END_MS + AGGREGATION_DURATION_MS,
-      weekId: '2026-09-09_week',
+      weekId: '2026-09-13_week',
     };
   }
 

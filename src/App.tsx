@@ -47,7 +47,7 @@ import { ShareModal } from './components/ShareModal';
 import { UpdateNotesModal } from './components/UpdateNotesModal';
 import { GiftBoxModal } from './components/GiftBoxModal';
 import { RewardScoutModal } from './components/RewardScoutModal';
-import { OfficialTournamentModal } from './components/OfficialTournamentModal';
+import { OnlineSyncDebugModal } from './components/OnlineSyncDebugModal';
 import { ErrorBoundary } from './components/ErrorBoundary';
 import {
   getStoredUserTickets,
@@ -355,7 +355,7 @@ export default function App() {
   // Modals for Gift Box and Reward Scout
   const [isGiftBoxOpen, setIsGiftBoxOpen] = useState<boolean>(false);
   const [isRewardScoutOpen, setIsRewardScoutOpen] = useState<boolean>(false);
-  const [isTournamentOpen, setIsTournamentOpen] = useState<boolean>(false);
+  const [isSyncDebugOpen, setIsSyncDebugOpen] = useState<boolean>(false);
   const [rewardTickets, setRewardTickets] = useState<UserRewardTickets>(() => getStoredUserTickets());
   const [presents, setPresents] = useState<PresentBoxItem[]>([]);
 
@@ -1141,6 +1141,7 @@ export default function App() {
         onToggleSound={handleToggleSound}
         onOpenGiftBox={() => setIsGiftBoxOpen(true)}
         onOpenScoutModal={() => setIsRewardScoutOpen(true)}
+        onOpenSyncDebug={() => setIsSyncDebugOpen(true)}
         unclaimedGiftsCount={presents.filter((p) => !p.isClaimed).length}
         totalTicketsCount={getTotalTicketsCount(rewardTickets)}
       />
@@ -1158,7 +1159,6 @@ export default function App() {
             onOpenUpdateNotes={() => setIsUpdateNotesOpen(true)}
             onOpenGiftBox={() => setIsGiftBoxOpen(true)}
             onOpenScoutModal={() => setIsRewardScoutOpen(true)}
-            onOpenTournamentModal={() => setIsTournamentOpen(true)}
             unclaimedGiftsCount={presents.filter((p) => !p.isClaimed).length}
             totalTicketsCount={getTotalTicketsCount(rewardTickets)}
             teams={teams}
@@ -1379,6 +1379,7 @@ export default function App() {
             language={language}
             onBackToDraft={() => setCurrentView('draft')}
             onNavigate={(tab) => setCurrentView(tab)}
+            onOpenSyncDebug={() => setIsSyncDebugOpen(true)}
           />
         )}
       </main>
@@ -1409,28 +1410,6 @@ export default function App() {
         }}
         onAcquirePlayer={handleAcquireScoutPlayer}
       />
-
-      {/* Official Tournament Modal */}
-      <ErrorBoundary
-        fallbackTitle="公式大会画面の読み込み中にエラーが発生しました"
-        onReset={() => setIsTournamentOpen(false)}
-      >
-        <OfficialTournamentModal
-          isOpen={isTournamentOpen}
-          onClose={() => setIsTournamentOpen(false)}
-          currentUserProfile={{
-            userId: userProfile.userId,
-            username: userProfile.username,
-            team: activeTeam,
-            tactics: userProfile.tactics,
-            defenseSquad: userProfile.defenseSquad,
-          }}
-          onOpenGiftBox={() => {
-            setIsTournamentOpen(false);
-            setIsGiftBoxOpen(true);
-          }}
-        />
-      </ErrorBoundary>
 
       {/* Mode Select Modal (Pop-up on "PLAY / SPIN DRAFT" or mode change) */}
       <ModeSelectModal
@@ -1508,6 +1487,12 @@ export default function App() {
           xCharLimit={xCharLimit}
         />
       )}
+
+      {/* Online Sync Debug & Health Monitor Modal */}
+      <OnlineSyncDebugModal
+        isOpen={isSyncDebugOpen}
+        onClose={() => setIsSyncDebugOpen(false)}
+      />
 
       {/* Footer */}
       <footer className="mt-auto py-4 border-t border-slate-900 bg-slate-950/80 text-center text-xs text-slate-400">
