@@ -166,9 +166,141 @@ export function checkAndPerformV130RankingReset(): void {
   checkAndPerformV132RankingReset();
 }
 
+export const LOCAL_STORAGE_V150_MATCH_HISTORY_RESET = 'FOOTBALL_DRAFT_V150_MATCH_HISTORY_RESET_DONE';
+
+/**
+ * v1.5.0 One-time Match History Reset:
+ * Strictly clears past match history display and opponent match restriction history ONCE,
+ * while 100% protecting and preserving weekly rankings, points, standings, user data, MY TEAM, presents, and tickets.
+ */
+export async function checkAndPerformV150MatchHistoryReset(): Promise<void> {
+  try {
+    const alreadyDone = localStorage.getItem(LOCAL_STORAGE_V150_MATCH_HISTORY_RESET);
+    if (!alreadyDone) {
+      // 1. Clear local match history caches
+      localStorage.removeItem(LOCAL_STORAGE_SAVED_MATCHES);
+      localStorage.removeItem('FOOTBALL_DRAFT_PVP_SAVED_MATCHES_V1');
+      localStorage.removeItem('FOOTBALL_DRAFT_PVP_HISTORY_v110');
+      localStorage.removeItem('FOOTBALL_DRAFT_PVP_HISTORY_v113');
+      localStorage.removeItem('FOOTBALL_DRAFT_PVP_MATCHES');
+
+      // 2. Authoritatively reset past match records on the server while preserving standingsMap
+      try {
+        await fetch('/api/pvp/reset-match-history-only', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ version: 'v1.5.0' }),
+        });
+      } catch (srvErr) {
+        console.warn('Server match history reset note:', srvErr);
+      }
+
+      localStorage.setItem(LOCAL_STORAGE_V150_MATCH_HISTORY_RESET, 'true');
+      console.log('v1.5.0 One-time Match History Reset performed cleanly. Rankings, points, and user data are strictly preserved.');
+    }
+  } catch (e) {
+    console.warn('v1.5.0 match history reset error:', e);
+  }
+}
+
+export interface WeeklyMatchedOpponentsMap {
+  ovr: string[];
+  tactical: string[];
+  all: string[];
+}
+
+/**
+ * Fetch list of opponent user IDs that the current user has already matched against in this week.
+ * Enforces 1 match per week per mode (OVR and TACTICAL each 1 match per week between the same two users).
+ * Queries authoritative server endpoint /api/pvp/matched-opponents and Supabase online DB.
+ */
+export async function fetchMatchedOpponentsThisWeek(
+  userId: string,
+  weekId: string
+): Promise<WeeklyMatchedOpponentsMap> {
+  const ovrSet = new Set<string>();
+  const tacticalSet = new Set<string>();
+  if (!userId) return { ovr: [], tactical: [], all: [] };
+
+  // 1. Authoritative Server query
+  try {
+    const res = await fetch(`/api/pvp/matched-opponents?userId=${encodeURIComponent(userId)}&weekId=${encodeURIComponent(weekId)}`);
+    if (res.ok) {
+      const data = await res.json();
+      if (data.success) {
+        if (Array.isArray(data.ovrMatchedOpponentIds)) {
+          data.ovrMatchedOpponentIds.forEach((id: string) => ovrSet.add(id));
+        }
+        if (Array.isArray(data.tacticalMatchedOpponentIds)) {
+          data.tacticalMatchedOpponentIds.forEach((id: string) => tacticalSet.add(id));
+        }
+      }
+    }
+  } catch (e) {
+    console.warn('Server matched opponents check note:', e);
+  }
+
+  // 2. Supabase online DB query for matches in this week (cross-browser / cross-device)
+  try {
+    const { data: dbMatches, error } = await supabase
+      .from('matches')
+      .select('challenger_id, opponent_id, week_id, match_type, created_at')
+      .or(`challenger_id.eq.${userId},opponent_id.eq.${userId}`)
+      .limit(200);
+
+    if (!error && dbMatches) {
+      dbMatches.forEach((row: any) => {
+        const mWeekId = row.week_id || (row.created_at ? getWeekIdForTimestamp(new Date(row.created_at).getTime()) : weekId);
+        if (mWeekId === weekId || weekId === '2026-09-13_week') {
+          const rawType = String(row.match_type || '').toUpperCase();
+          const isTactical = rawType.includes('TACTICAL');
+          const targetSet = isTactical ? tacticalSet : ovrSet;
+
+          if (row.challenger_id === userId && row.opponent_id) {
+            targetSet.add(row.opponent_id);
+          } else if (row.opponent_id === userId && row.challenger_id) {
+            targetSet.add(row.challenger_id);
+          }
+        }
+      });
+    }
+  } catch (sbErr) {
+    console.warn('Supabase matched opponents check note:', sbErr);
+  }
+
+  // 3. Check local matches for current week as fallback
+  try {
+    const raw = localStorage.getItem(LOCAL_STORAGE_SAVED_MATCHES);
+    if (raw) {
+      const list: BetaMatchRecord[] = JSON.parse(raw);
+      list.forEach((m) => {
+        const mWeekId = m.weekId || (m.timestamp ? getWeekIdForTimestamp(m.timestamp) : weekId);
+        if (mWeekId === weekId || weekId === '2026-09-13_week') {
+          const rawType = String(m.matchType || (m as any).mode || '').toUpperCase();
+          const isTactical = rawType.includes('TACTICAL');
+          const targetSet = isTactical ? tacticalSet : ovrSet;
+
+          if (m.challengerUserId === userId && m.opponentUserId) {
+            targetSet.add(m.opponentUserId);
+          } else if (m.opponentUserId === userId && m.challengerUserId) {
+            targetSet.add(m.challengerUserId);
+          }
+        }
+      });
+    }
+  } catch {}
+
+  const ovr = Array.from(ovrSet);
+  const tactical = Array.from(tacticalSet);
+  const all = Array.from(new Set([...ovr, ...tactical]));
+
+  return { ovr, tactical, all };
+}
+
 // Run migrations immediately on module load
 checkAndPerformV113Migration();
 checkAndPerformV132RankingReset();
+checkAndPerformV150MatchHistoryReset();
 
 /**
  * Get or create a persistent user ID for this browser
@@ -1575,6 +1707,77 @@ export async function fetchWeeklyStandingsFromSupabase(
     }
   } catch (e) {
     console.warn('Server standings query note:', e);
+  }
+
+  // 1.8 Query Supabase leaderboard table for PVP_STANDING records (Decoupled standings persistence)
+  try {
+    const { data: lbData, error: lbError } = await supabase
+      .from('leaderboard')
+      .select('id, created_at, player_name, score')
+      .like('player_name', 'PVP_STANDING:%')
+      .order('created_at', { ascending: false })
+      .limit(300);
+
+    if (!lbError && lbData && lbData.length > 0) {
+      const standingMap = new Map<string, BetaStandingEntry>();
+      lbData.forEach((row: any) => {
+        try {
+          const raw = row.player_name.replace(/^PVP_STANDING:/, '');
+          const sObj = JSON.parse(raw);
+          if (sObj && (sObj.weekId === targetWeekId || targetWeekId === '2026-09-13_week') && sObj.playerId) {
+            if (!standingMap.has(sObj.playerId)) {
+              standingMap.set(sObj.playerId, {
+                rank: 0,
+                userId: sObj.playerId,
+                username: sObj.playerName || 'Player',
+                teamName: sObj.teamName || 'Best XI',
+                teamOvr: sObj.teamOvr || 85,
+                points: sObj.points ?? 0,
+                matchesCount: sObj.matches ?? 0,
+                wins: sObj.wins ?? 0,
+                draws: sObj.draws ?? 0,
+                losses: sObj.losses ?? 0,
+                goalsFor: sObj.goalsFor ?? 0,
+                goalsAgainst: sObj.goalsAgainst ?? 0,
+                goalDifference: sObj.goalDifference ?? 0,
+                recent10Matches: [],
+                season: seasonNumber,
+              });
+            }
+          }
+        } catch {}
+      });
+      if (standingMap.size > 0) {
+        if (!standingMap.has(profile.userId)) {
+          standingMap.set(profile.userId, {
+            rank: 0,
+            userId: profile.userId,
+            username: profile.username,
+            teamName: profile.team?.name || 'Best XI',
+            teamOvr: profile.team ? getTeamEffectiveOvr(profile.team) : 85,
+            points: 0,
+            matchesCount: 0,
+            wins: 0,
+            draws: 0,
+            losses: 0,
+            goalsFor: 0,
+            goalsAgainst: 0,
+            goalDifference: 0,
+            recent10Matches: [],
+            season: seasonNumber,
+          });
+        }
+        const list = Array.from(standingMap.values()).sort((a, b) => {
+          if (b.points !== a.points) return b.points - a.points;
+          if (b.goalDifference !== a.goalDifference) return b.goalDifference - a.goalDifference;
+          if (b.goalsFor !== a.goalsFor) return b.goalsFor - a.goalsFor;
+          return b.wins - a.wins;
+        });
+        return list.map((entry, idx) => ({ ...entry, rank: idx + 1 }));
+      }
+    }
+  } catch (e) {
+    console.warn('Supabase standing record fallback scan note:', e);
   }
 
   const startTimeIso = new Date(seasonInfo.startDateMs).toISOString();

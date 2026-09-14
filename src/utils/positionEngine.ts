@@ -62,8 +62,10 @@ export function normalizeRoleToEFootball(role: string): EFootballPosition {
     case 'CB':
       return 'CB';
     case 'LB':
+    case 'LSB':
       return 'LB';
     case 'RB':
+    case 'RSB':
       return 'RB';
     case 'LWB':
       return 'LWB';
@@ -85,6 +87,7 @@ export function normalizeRoleToEFootball(role: string): EFootballPosition {
     case 'LAM':
     case 'RAM':
     case 'AMF':
+    case 'OMF':
       return 'AMF';
     case 'LW':
     case 'LWG':
@@ -96,7 +99,12 @@ export function normalizeRoleToEFootball(role: string): EFootballPosition {
       return 'SS';
     case 'ST':
     case 'CF':
+    case 'FW':
       return 'CF';
+    case 'DF':
+      return 'CB';
+    case 'MF':
+      return 'CMF';
     default:
       return 'CMF';
   }

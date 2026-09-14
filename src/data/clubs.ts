@@ -214,6 +214,20 @@ export const EUROPEAN_CLUBS: Club[] = [
     countryFlag: '🏴󠁧󠁢󠁥󠁮󠁧󠁿',
     badgeSymbol: '🦁',
   },
+  {
+    id: 'bournemouth',
+    name: 'AFC Bournemouth',
+    nameJa: 'AFCボーンマス',
+    nameEn: 'AFC Bournemouth',
+    nameEs: 'AFC Bournemouth',
+    shortName: 'BOU',
+    league: 'europe',
+    primaryColor: '#DA291C',
+    secondaryColor: '#000000',
+    country: 'England',
+    countryFlag: '🏴󠁧󠁢󠁥󠁮󠁧󠁿',
+    badgeSymbol: '🍒',
+  },
 
   // Germany
   {

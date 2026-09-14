@@ -51,6 +51,126 @@ const PVP_MATCHES_FILE = path.join(DATA_DIR, 'pvp_matches.json');
 const serverPvPUsersMap: Map<string, ServerPvPUser> = new Map();
 const serverPvPMatchesList: ServerPvPMatch[] = [];
 
+// Persistent Standings Store (decoupled from match history)
+export interface ServerPvPStanding {
+  weekId: string;
+  seasonNumber: number;
+  playerId: string;
+  playerName: string;
+  teamName: string;
+  teamOvr: number;
+  points: number;
+  matches: number;
+  wins: number;
+  draws: number;
+  losses: number;
+  goalsFor: number;
+  goalsAgainst: number;
+  goalDifference: number;
+  recentForm: ('W' | 'D' | 'L')[];
+  lastMatchTimestamp: number;
+  updatedAt: number;
+}
+
+const PVP_STANDINGS_FILE = path.join(DATA_DIR, 'football_draft_pvp_standings.json');
+const serverPvPStandingsMap: Map<string, ServerPvPStanding> = new Map();
+
+function getStandingKey(weekId: string, playerId: string): string {
+  return `${weekId}_${playerId}`;
+}
+
+function savePvPStandingsToDisk() {
+  try {
+    const list = Array.from(serverPvPStandingsMap.values());
+    fs.writeFileSync(PVP_STANDINGS_FILE, JSON.stringify(list, null, 2), 'utf-8');
+  } catch (e) {
+    console.error('Failed to write pvp_standings.json', e);
+  }
+}
+
+// Weekly Season Timing Helpers (JST UTC+9) - v1.3.2 Release
+const JST_OFFSET_MS = 9 * 60 * 60 * 1000;
+const ONE_WEEK_MS = 7 * 24 * 60 * 60 * 1000;
+const AGGREGATION_DURATION_MS = 60 * 60 * 1000; // 1 hour (00:00 - 01:00 JST)
+
+// Season 1 special window (2026-09-13 00:00:00 JST to 2026-09-20 23:59:59.999 JST)
+const SEASON_1_START_MS = Date.UTC(2026, 8, 12, 15, 0, 0); // 2026-09-13 00:00:00 JST
+const SEASON_1_END_MS = Date.UTC(2026, 8, 20, 14, 59, 59, 999); // 2026-09-20 23:59:59.999 JST
+const SEASON_2_START_MS = Date.UTC(2026, 8, 20, 15, 0, 0); // 2026-09-21 00:00:00 JST
+
+function formatWeekId(startMs: number): string {
+  const d = new Date(startMs + JST_OFFSET_MS);
+  const year = d.getUTCFullYear();
+  const month = String(d.getUTCMonth() + 1).padStart(2, '0');
+  const date = String(d.getUTCDate()).padStart(2, '0');
+  return `${year}-${month}-${date}_week`;
+}
+
+function getCurrentJSTDate(nowMs: number = Date.now()): Date {
+  return new Date(nowMs + JST_OFFSET_MS);
+}
+
+function getWeekSeasonInfo(timestamp: number = Date.now()): {
+  weekId: string;
+  seasonNumber: number;
+  phase: 'ACTIVE' | 'AGGREGATING' | 'FINALIZED';
+  phaseTextJa: string;
+  phaseTextEn: string;
+  matchAcceptanceOpen: boolean;
+  startMs: number;
+  endMs: number;
+  aggregationEndMs: number;
+} {
+  let seasonNum = 1;
+  let startMs = SEASON_1_START_MS;
+  let endMs = SEASON_1_END_MS;
+
+  if (timestamp <= SEASON_1_END_MS) {
+    seasonNum = 1;
+    startMs = SEASON_1_START_MS;
+    endMs = SEASON_1_END_MS;
+  } else {
+    const diff = timestamp - SEASON_2_START_MS;
+    const weeksAfter = Math.floor(diff / ONE_WEEK_MS);
+    seasonNum = 2 + weeksAfter;
+    startMs = SEASON_2_START_MS + weeksAfter * ONE_WEEK_MS;
+    endMs = startMs + ONE_WEEK_MS - 1;
+  }
+
+  // Aggregation window: exactly 1 hour following phase end (24:00〜25:00 JST = 00:00〜01:00 JST next day)
+  const aggregationEndMs = endMs + AGGREGATION_DURATION_MS;
+  const weekId = seasonNum === 1 ? '2026-09-13_week' : formatWeekId(startMs);
+
+  let phase: 'ACTIVE' | 'AGGREGATING' | 'FINALIZED' = 'ACTIVE';
+  let phaseTextJa = '対戦受付中';
+  let phaseTextEn = 'Active Matches';
+  let matchAcceptanceOpen = true;
+
+  if (timestamp > endMs && timestamp <= aggregationEndMs) {
+    phase = 'AGGREGATING';
+    phaseTextJa = 'ランキング集計中（24:00〜25:00）';
+    phaseTextEn = 'Aggregating Rankings';
+    matchAcceptanceOpen = false;
+  } else if (timestamp > aggregationEndMs) {
+    phase = 'FINALIZED';
+    phaseTextJa = '第' + seasonNum + '回 確定';
+    phaseTextEn = 'Finalized';
+    matchAcceptanceOpen = false;
+  }
+
+  return {
+    weekId,
+    seasonNumber: seasonNum,
+    phase,
+    phaseTextJa,
+    phaseTextEn,
+    matchAcceptanceOpen,
+    startMs,
+    endMs,
+    aggregationEndMs,
+  };
+}
+
 // Load initial data from disk
 try {
   if (fs.existsSync(PVP_USERS_FILE)) {
@@ -70,6 +190,110 @@ try {
   }
 } catch (e) {
   console.error('Failed to read pvp_matches.json', e);
+}
+
+try {
+  if (fs.existsSync(PVP_STANDINGS_FILE)) {
+    const raw = fs.readFileSync(PVP_STANDINGS_FILE, 'utf-8');
+    const list: ServerPvPStanding[] = JSON.parse(raw);
+    list.forEach((s) => {
+      serverPvPStandingsMap.set(getStandingKey(s.weekId, s.playerId), s);
+    });
+  }
+} catch (e) {
+  console.error('Failed to read pvp_standings.json', e);
+}
+
+function applyMatchToStandings(m: ServerPvPMatch) {
+  const currentWeekInfo = getWeekSeasonInfo(m.timestamp || Date.now());
+  const resolvedWeekId = m.weekId || currentWeekInfo.weekId;
+  const seasonNumber = m.seasonNumber || m.season || currentWeekInfo.seasonNumber;
+
+  // 1. Challenger Standing
+  const cKey = getStandingKey(resolvedWeekId, m.challengerUserId);
+  const cExisting: ServerPvPStanding = serverPvPStandingsMap.get(cKey) || {
+    weekId: resolvedWeekId,
+    seasonNumber,
+    playerId: m.challengerUserId,
+    playerName: m.challengerUsername || 'Challenger',
+    teamName: m.challengerTeam?.teamName || m.challengerTeam?.name || 'My Team',
+    teamOvr: m.challengerTeam?.ovr || m.challengerTeam?.teamOvr || 85,
+    points: 0,
+    matches: 0,
+    wins: 0,
+    draws: 0,
+    losses: 0,
+    goalsFor: 0,
+    goalsAgainst: 0,
+    goalDifference: 0,
+    recentForm: [],
+    lastMatchTimestamp: 0,
+    updatedAt: 0,
+  };
+
+  const isWin = (m.challengerScore ?? 0) > (m.opponentScore ?? 0) || m.result === 'WIN';
+  const isDraw = (m.challengerScore ?? 0) === (m.opponentScore ?? 0) || m.result === 'DRAW';
+  const isLoss = !isWin && !isDraw;
+
+  cExisting.matches += 1;
+  cExisting.points += isWin ? 3 : isDraw ? 1 : 0;
+  if (isWin) cExisting.wins += 1;
+  else if (isDraw) cExisting.draws += 1;
+  else cExisting.losses += 1;
+  cExisting.goalsFor += (m.challengerScore ?? 0);
+  cExisting.goalsAgainst += (m.opponentScore ?? 0);
+  cExisting.goalDifference = cExisting.goalsFor - cExisting.goalsAgainst;
+  cExisting.recentForm = [isWin ? 'W' : isDraw ? 'D' : 'L', ...(cExisting.recentForm || [])].slice(0, 5) as ('W' | 'D' | 'L')[];
+  cExisting.lastMatchTimestamp = Math.max(cExisting.lastMatchTimestamp || 0, m.timestamp || Date.now());
+  cExisting.updatedAt = Date.now();
+  if (m.challengerUsername) cExisting.playerName = m.challengerUsername;
+  if (m.challengerTeam?.teamName || m.challengerTeam?.name) cExisting.teamName = m.challengerTeam.teamName || m.challengerTeam.name;
+  if (m.challengerTeam?.ovr || m.challengerTeam?.teamOvr) cExisting.teamOvr = m.challengerTeam.ovr || m.challengerTeam.teamOvr;
+  serverPvPStandingsMap.set(cKey, cExisting);
+
+  // 2. Opponent Standing
+  const oKey = getStandingKey(resolvedWeekId, m.opponentUserId);
+  const oExisting: ServerPvPStanding = serverPvPStandingsMap.get(oKey) || {
+    weekId: resolvedWeekId,
+    seasonNumber,
+    playerId: m.opponentUserId,
+    playerName: m.opponentUsername || 'Opponent',
+    teamName: m.opponentTeam?.teamName || m.opponentTeam?.name || 'Best XI',
+    teamOvr: m.opponentTeam?.ovr || m.opponentTeam?.teamOvr || 85,
+    points: 0,
+    matches: 0,
+    wins: 0,
+    draws: 0,
+    losses: 0,
+    goalsFor: 0,
+    goalsAgainst: 0,
+    goalDifference: 0,
+    recentForm: [],
+    lastMatchTimestamp: 0,
+    updatedAt: 0,
+  };
+
+  oExisting.matches += 1;
+  oExisting.points += isLoss ? 3 : isDraw ? 1 : 0;
+  if (isLoss) oExisting.wins += 1;
+  else if (isDraw) oExisting.draws += 1;
+  else oExisting.losses += 1;
+  oExisting.goalsFor += (m.opponentScore ?? 0);
+  oExisting.goalsAgainst += (m.challengerScore ?? 0);
+  oExisting.goalDifference = oExisting.goalsFor - oExisting.goalsAgainst;
+  oExisting.recentForm = [isLoss ? 'W' : isDraw ? 'D' : 'L', ...(oExisting.recentForm || [])].slice(0, 5) as ('W' | 'D' | 'L')[];
+  oExisting.lastMatchTimestamp = Math.max(oExisting.lastMatchTimestamp || 0, m.timestamp || Date.now());
+  oExisting.updatedAt = Date.now();
+  if (m.opponentUsername) oExisting.playerName = m.opponentUsername;
+  if (m.opponentTeam?.teamName || m.opponentTeam?.name) oExisting.teamName = m.opponentTeam.teamName || m.opponentTeam.name;
+  if (m.opponentTeam?.ovr || m.opponentTeam?.teamOvr) oExisting.teamOvr = m.opponentTeam.ovr || m.opponentTeam.teamOvr;
+  serverPvPStandingsMap.set(oKey, oExisting);
+}
+
+// Initial bootstrap: populate standings from existing matches if standings file was empty
+if (serverPvPStandingsMap.size === 0 && serverPvPMatchesList.length > 0) {
+  serverPvPMatchesList.forEach((m) => applyMatchToStandings(m));
+  savePvPStandingsToDisk();
 }
 
 function savePvPUsersToDisk() {
@@ -157,89 +381,6 @@ function saveUserTicketsToDisk() {
   } catch (e) {
     console.error('Failed to write user_tickets.json', e);
   }
-}
-
-// Weekly Season Timing Helpers (JST UTC+9) - v1.3.2 Release
-const JST_OFFSET_MS = 9 * 60 * 60 * 1000;
-const ONE_WEEK_MS = 7 * 24 * 60 * 60 * 1000;
-const AGGREGATION_DURATION_MS = 60 * 60 * 1000; // 1 hour (00:00 - 01:00 JST)
-
-// Season 1 special window (2026-09-13 00:00:00 JST to 2026-09-20 23:59:59.999 JST)
-const SEASON_1_START_MS = Date.UTC(2026, 8, 12, 15, 0, 0); // 2026-09-13 00:00:00 JST
-const SEASON_1_END_MS = Date.UTC(2026, 8, 20, 14, 59, 59, 999); // 2026-09-20 23:59:59.999 JST
-const SEASON_2_START_MS = Date.UTC(2026, 8, 20, 15, 0, 0); // 2026-09-21 00:00:00 JST
-
-function formatWeekId(startMs: number): string {
-  const d = new Date(startMs + JST_OFFSET_MS);
-  const year = d.getUTCFullYear();
-  const month = String(d.getUTCMonth() + 1).padStart(2, '0');
-  const date = String(d.getUTCDate()).padStart(2, '0');
-  return `${year}-${month}-${date}_week`;
-}
-
-function getCurrentJSTDate(nowMs: number = Date.now()): Date {
-  return new Date(nowMs + JST_OFFSET_MS);
-}
-
-function getWeekSeasonInfo(timestamp: number = Date.now()): {
-  weekId: string;
-  seasonNumber: number;
-  phase: 'ACTIVE' | 'AGGREGATING' | 'FINALIZED';
-  phaseTextJa: string;
-  phaseTextEn: string;
-  matchAcceptanceOpen: boolean;
-  startMs: number;
-  endMs: number;
-  aggregationEndMs: number;
-} {
-  let seasonNum = 1;
-  let startMs = SEASON_1_START_MS;
-  let endMs = SEASON_1_END_MS;
-
-  if (timestamp <= SEASON_1_END_MS) {
-    seasonNum = 1;
-    startMs = SEASON_1_START_MS;
-    endMs = SEASON_1_END_MS;
-  } else {
-    const diff = timestamp - SEASON_2_START_MS;
-    const weeksAfter = Math.floor(diff / ONE_WEEK_MS);
-    seasonNum = 2 + weeksAfter;
-    startMs = SEASON_2_START_MS + weeksAfter * ONE_WEEK_MS;
-    endMs = startMs + ONE_WEEK_MS - 1;
-  }
-
-  // Aggregation window: exactly 1 hour following phase end (24:00〜25:00 JST = 00:00〜01:00 JST next day)
-  const aggregationEndMs = endMs + AGGREGATION_DURATION_MS;
-  const weekId = seasonNum === 1 ? '2026-09-13_week' : formatWeekId(startMs);
-
-  let phase: 'ACTIVE' | 'AGGREGATING' | 'FINALIZED' = 'ACTIVE';
-  let phaseTextJa = '対戦受付中';
-  let phaseTextEn = 'Active Matches';
-  let matchAcceptanceOpen = true;
-
-  if (timestamp > endMs && timestamp <= aggregationEndMs) {
-    phase = 'AGGREGATING';
-    phaseTextJa = 'ランキング集計中（24:00〜25:00）';
-    phaseTextEn = 'Aggregating Rankings';
-    matchAcceptanceOpen = false;
-  } else if (timestamp > aggregationEndMs) {
-    phase = 'FINALIZED';
-    phaseTextJa = '第' + seasonNum + '回 確定';
-    phaseTextEn = 'Finalized';
-    matchAcceptanceOpen = false;
-  }
-
-  return {
-    weekId,
-    seasonNumber: seasonNum,
-    phase,
-    phaseTextJa,
-    phaseTextEn,
-    matchAcceptanceOpen,
-    startMs,
-    endMs,
-    aggregationEndMs,
-  };
 }
 
 async function startServer() {
@@ -590,6 +731,14 @@ async function startServer() {
       if (!match || !match.id || !match.challengerUserId || !match.opponentUserId) {
         return res.status(400).json({ error: 'Invalid match record' });
       }
+      const currentWeekInfo = getWeekSeasonInfo(match.timestamp || Date.now());
+      if (!match.weekId) {
+        match.weekId = currentWeekInfo.weekId;
+      }
+      if (!match.seasonNumber && !match.season) {
+        match.seasonNumber = currentWeekInfo.seasonNumber;
+      }
+
       const existingIdx = serverPvPMatchesList.findIndex((m) => m.id === match.id);
       if (existingIdx >= 0) {
         serverPvPMatchesList[existingIdx] = match;
@@ -598,8 +747,34 @@ async function startServer() {
       }
       savePvPMatchesToDisk();
 
-      // Persist to Supabase leaderboard table as PVP_MATCH record
+      // Authoritatively update persistent standings decoupled from match history
+      applyMatchToStandings(match);
+      savePvPStandingsToDisk();
+
+      // Persist to Supabase leaderboard table as PVP_MATCH and PVP_STANDING records
       try {
+        const cStanding = serverPvPStandingsMap.get(getStandingKey(match.weekId, match.challengerUserId));
+        const oStanding = serverPvPStandingsMap.get(getStandingKey(match.weekId, match.opponentUserId));
+
+        const batchRecords = [
+          {
+            player_name: 'PVP_MATCH:' + JSON.stringify(match),
+            score: match.result === 'WIN' ? 3 : match.result === 'DRAW' ? 1 : 0,
+          },
+        ];
+        if (cStanding) {
+          batchRecords.push({
+            player_name: 'PVP_STANDING:' + JSON.stringify(cStanding),
+            score: cStanding.points,
+          });
+        }
+        if (oStanding) {
+          batchRecords.push({
+            player_name: 'PVP_STANDING:' + JSON.stringify(oStanding),
+            score: oStanding.points,
+          });
+        }
+
         await fetch(`${SUPABASE_LEADERBOARD_URL}/rest/v1/leaderboard`, {
           method: 'POST',
           headers: {
@@ -608,35 +783,125 @@ async function startServer() {
             'Content-Type': 'application/json',
             Prefer: 'return=minimal',
           },
-          body: JSON.stringify({
-            player_name: 'PVP_MATCH:' + JSON.stringify(match),
-            score: match.result === 'WIN' ? 3 : match.result === 'DRAW' ? 1 : 0,
-          }),
+          body: JSON.stringify(batchRecords),
         });
       } catch (sbErr) {
         console.warn('Supabase match push note:', sbErr);
       }
 
-      res.json({ success: true, matchId: match.id, totalMatches: serverPvPMatchesList.length });
+      res.json({
+        success: true,
+        matchId: match.id,
+        weekId: match.weekId,
+        totalMatches: serverPvPMatchesList.length,
+      });
     } catch (e: any) {
       res.status(500).json({ error: e?.message || 'Server error' });
     }
   });
 
-  // 6.5.3.5 Reset weekly standings and match history (authoritative reset)
-  app.post('/api/pvp/reset-standings', (req, res) => {
+  // 6.5.3.5 Reset match history ONLY (Strictly protects rankings and standing points)
+  app.post('/api/pvp/reset-match-history-only', (req, res) => {
     try {
+      const clearedCount = serverPvPMatchesList.length;
       serverPvPMatchesList.length = 0;
       savePvPMatchesToDisk();
-      console.log('Authoritative weekly standings and matches successfully reset to 0.');
+
+      console.log(`[PvP] Authoritative match history reset: cleared ${clearedCount} matches. Weekly standings strictly preserved with ${serverPvPStandingsMap.size} user records.`);
       res.json({
         success: true,
-        message: '週間ランキングおよび対戦履歴を完全にリセットしました。今からの対戦がリアルタイム集計されます。',
-        totalMatches: 0,
+        message: '対戦履歴のみリセットしました。週間ランキング（ポイント・順位等）は完全に維持されています。',
+        clearedMatchesCount: clearedCount,
+        standingsPreservedCount: serverPvPStandingsMap.size,
+        timestamp: Date.now(),
+      });
+    } catch (e: any) {
+      res.status(500).json({ error: e?.message || 'Failed to reset match history' });
+    }
+  });
+
+  // Backward compatible reset endpoint (Safe: preserves standings unless forced)
+  app.post('/api/pvp/reset-standings', (req, res) => {
+    try {
+      const { forceResetRankings } = req.body || {};
+      const clearedCount = serverPvPMatchesList.length;
+      serverPvPMatchesList.length = 0;
+      savePvPMatchesToDisk();
+
+      if (forceResetRankings === true) {
+        serverPvPStandingsMap.clear();
+        savePvPStandingsToDisk();
+      }
+
+      res.json({
+        success: true,
+        message: '対戦履歴をリセットしました。ランキングデータは保護されています。',
+        clearedMatchesCount: clearedCount,
+        standingsPreservedCount: serverPvPStandingsMap.size,
         timestamp: Date.now(),
       });
     } catch (e: any) {
       res.status(500).json({ error: e?.message || 'Failed to reset standings' });
+    }
+  });
+
+  // 6.5.3.8 Get opponents matched against in current week (Weekly 1-match limit per mode: OVR & TACTICAL each 1 match per week)
+  app.get('/api/pvp/matched-opponents', (req, res) => {
+    try {
+      const { userId, weekId, mode } = req.query;
+      if (!userId) return res.status(400).json({ error: 'userId is required' });
+      const currentWeekInfo = getWeekSeasonInfo(Date.now());
+      const targetWeekId = weekId ? String(weekId) : currentWeekInfo.weekId;
+
+      const ovrMatchedOpponentsSet = new Set<string>();
+      const tacticalMatchedOpponentsSet = new Set<string>();
+
+      for (const m of serverPvPMatchesList) {
+        const mWeek = m.weekId || (m.timestamp ? getWeekSeasonInfo(m.timestamp).weekId : targetWeekId);
+        if (mWeek === targetWeekId || targetWeekId === '2026-09-13_week') {
+          const rawMode = String((m as any).mode || m.matchType || 'OVR').toUpperCase();
+          const isTactical = rawMode.includes('TACTICAL');
+          let otherId: string | null = null;
+          if (m.challengerUserId === userId) {
+            otherId = m.opponentUserId;
+          } else if (m.opponentUserId === userId) {
+            otherId = m.challengerUserId;
+          }
+
+          if (otherId) {
+            if (isTactical) {
+              tacticalMatchedOpponentsSet.add(otherId);
+            } else {
+              ovrMatchedOpponentsSet.add(otherId);
+            }
+          }
+        }
+      }
+
+      const ovrList = Array.from(ovrMatchedOpponentsSet);
+      const tacticalList = Array.from(tacticalMatchedOpponentsSet);
+      let matchedOpponentIds: string[] = [];
+
+      const queryMode = mode ? String(mode).toUpperCase() : null;
+      if (queryMode === 'OVR') {
+        matchedOpponentIds = ovrList;
+      } else if (queryMode === 'TACTICAL') {
+        matchedOpponentIds = tacticalList;
+      } else {
+        matchedOpponentIds = Array.from(new Set([...ovrList, ...tacticalList]));
+      }
+
+      res.json({
+        success: true,
+        userId,
+        weekId: targetWeekId,
+        mode: queryMode || 'ALL',
+        matchedOpponentIds,
+        ovrMatchedOpponentIds: ovrList,
+        tacticalMatchedOpponentIds: tacticalList,
+      });
+    } catch (e: any) {
+      res.status(500).json({ error: e?.message || 'Server error' });
     }
   });
 
@@ -663,93 +928,34 @@ async function startServer() {
     res.json({ success: true, matches: filtered });
   });
 
-  // 6.5.5 Get authoritative weekly standings computed from all users' matches
+  // 6.5.5 Get authoritative weekly standings (Decoupled from match history, persistent by weekId)
   app.get('/api/pvp/standings', (req, res) => {
-    const { weekId, seasonNumber, matchType } = req.query;
+    const { weekId, seasonNumber } = req.query;
     const currentWeekInfo = getWeekSeasonInfo(Date.now());
     const targetSeason = seasonNumber ? parseInt(String(seasonNumber), 10) : currentWeekInfo.seasonNumber;
     const resolvedWeekId = weekId ? String(weekId) : currentWeekInfo.weekId;
 
-    let seasonMatches = serverPvPMatchesList;
-    if (targetSeason === 1) {
-      // 1st PvP Ranking: 2026-09-13 00:00 JST to 2026-09-20 23:59 JST
-      // Only matches starting from 2026-09-13 00:00 JST are aggregated into Season 1 ranking
-      seasonMatches = seasonMatches.filter((m) =>
-        m.timestamp >= SEASON_1_START_MS && m.timestamp <= SEASON_1_END_MS
-      );
-    } else if (weekId) {
-      seasonMatches = seasonMatches.filter((m) => m.weekId === weekId || m.season === targetSeason || m.seasonNumber === targetSeason);
-    } else if (seasonNumber) {
-      seasonMatches = seasonMatches.filter((m) => m.seasonNumber === targetSeason || m.season === targetSeason);
-    }
-
-    if (matchType && matchType !== 'ALL') {
-      seasonMatches = seasonMatches.filter((m) => m.matchType === matchType);
-    }
-
-    // Strict match deduplication by unique ID to prevent double counting across sync cycles
-    const seenMatchKeys = new Set<string>();
-    const deduplicatedSeasonMatches: ServerPvPMatch[] = [];
-    for (const m of seasonMatches) {
-      const matchKey = m.id || m.matchId;
-      if (matchKey) {
-        if (!seenMatchKeys.has(matchKey)) {
-          seenMatchKeys.add(matchKey);
-          deduplicatedSeasonMatches.push(m);
-        }
-      } else {
-        deduplicatedSeasonMatches.push(m);
+    // 1. Gather all standing entries for this weekId from the persistent store
+    const standingsForWeek: ServerPvPStanding[] = [];
+    serverPvPStandingsMap.forEach((entry) => {
+      if (entry.weekId === resolvedWeekId || (!entry.weekId && resolvedWeekId === '2026-09-13_week')) {
+        standingsForWeek.push({ ...entry });
       }
-    }
-    seasonMatches = deduplicatedSeasonMatches;
+    });
 
-    const statsMap = new Map<string, {
-      userId: string;
-      username: string;
-      teamName: string;
-      points: number;
-      played: number;
-      wins: number;
-      draws: number;
-      losses: number;
-      goalsFor: number;
-      goalsAgainst: number;
-      goalDifference: number;
-      recentForm: ('W' | 'D' | 'L')[];
-      lastMatchTimestamp: number;
-      teamOvr?: number;
-    }>();
-
-    // Register known users with initial 0
+    // 2. Register known users with initial 0 if they haven't recorded a standing yet
     serverPvPUsersMap.forEach((u) => {
-      statsMap.set(u.userId, {
-        userId: u.userId,
-        username: u.username,
-        teamName: u.team?.name || 'Best XI',
-        points: 0,
-        played: 0,
-        wins: 0,
-        draws: 0,
-        losses: 0,
-        goalsFor: 0,
-        goalsAgainst: 0,
-        goalDifference: 0,
-        recentForm: [],
-        lastMatchTimestamp: 0,
-        teamOvr: u.team?.ovr || 85,
-      });
-    });
-
-    const sortedMatches = [...seasonMatches].sort((a, b) => a.timestamp - b.timestamp);
-    sortedMatches.forEach((m) => {
-      // 1. Challenger stats
-      if (!statsMap.has(m.challengerUserId)) {
-        statsMap.set(m.challengerUserId, {
-          userId: m.challengerUserId,
-          username: m.challengerUsername || 'Challenger',
-          teamName: m.challengerTeam?.teamName || m.challengerTeam?.name || 'Best XI',
+      const exists = standingsForWeek.some((s) => s.playerId === u.userId);
+      if (!exists) {
+        standingsForWeek.push({
+          weekId: resolvedWeekId,
+          seasonNumber: targetSeason,
+          playerId: u.userId,
+          playerName: u.username,
+          teamName: u.team?.name || 'Best XI',
+          teamOvr: u.team?.ovr || 85,
           points: 0,
-          played: 0,
+          matches: 0,
           wins: 0,
           draws: 0,
           losses: 0,
@@ -758,82 +964,29 @@ async function startServer() {
           goalDifference: 0,
           recentForm: [],
           lastMatchTimestamp: 0,
-          teamOvr: m.challengerTeam?.ovr || m.challengerTeam?.teamOvr || 85,
+          updatedAt: 0,
         });
       }
-      const c = statsMap.get(m.challengerUserId)!;
-      c.played += 1;
-      c.goalsFor += (m.challengerScore ?? 0);
-      c.goalsAgainst += (m.opponentScore ?? 0);
-      c.goalDifference = c.goalsFor - c.goalsAgainst;
-      c.lastMatchTimestamp = Math.max(c.lastMatchTimestamp, m.timestamp || 0);
-
-      // 2. Opponent stats
-      if (!statsMap.has(m.opponentUserId)) {
-        statsMap.set(m.opponentUserId, {
-          userId: m.opponentUserId,
-          username: m.opponentUsername || 'Opponent',
-          teamName: m.opponentTeam?.teamName || m.opponentTeam?.name || 'Opponent XI',
-          points: 0,
-          played: 0,
-          wins: 0,
-          draws: 0,
-          losses: 0,
-          goalsFor: 0,
-          goalsAgainst: 0,
-          goalDifference: 0,
-          recentForm: [],
-          lastMatchTimestamp: 0,
-          teamOvr: m.opponentTeam?.ovr || m.opponentTeam?.teamOvr || 85,
-        });
-      }
-      const o = statsMap.get(m.opponentUserId)!;
-      o.played += 1;
-      o.goalsFor += (m.opponentScore ?? 0);
-      o.goalsAgainst += (m.challengerScore ?? 0);
-      o.goalDifference = o.goalsFor - o.goalsAgainst;
-      o.lastMatchTimestamp = Math.max(o.lastMatchTimestamp, m.timestamp || 0);
-
-      const cScore = m.challengerScore ?? 0;
-      const oScore = m.opponentScore ?? 0;
-
-      if (cScore > oScore || m.result === 'WIN') {
-        c.wins += 1;
-        c.points += 3;
-        c.recentForm.push('W');
-        o.losses += 1;
-        o.recentForm.push('L');
-      } else if (cScore === oScore || m.result === 'DRAW') {
-        c.draws += 1;
-        c.points += 1;
-        c.recentForm.push('D');
-        o.draws += 1;
-        o.points += 1;
-        o.recentForm.push('D');
-      } else {
-        c.losses += 1;
-        c.recentForm.push('L');
-        o.wins += 1;
-        o.points += 3;
-        o.recentForm.push('W');
-      }
-      if (c.recentForm.length > 5) c.recentForm.shift();
-      if (o.recentForm.length > 5) o.recentForm.shift();
     });
 
-    const standings = Array.from(statsMap.values()).sort((a, b) => {
+    // 3. Strict Sort: Points DESC, Goal Difference DESC, Goals For DESC, Wins DESC
+    standingsForWeek.sort((a, b) => {
       if (b.points !== a.points) return b.points - a.points;
       if (b.goalDifference !== a.goalDifference) return b.goalDifference - a.goalDifference;
       if (b.goalsFor !== a.goalsFor) return b.goalsFor - a.goalsFor;
       if (b.wins !== a.wins) return b.wins - a.wins;
-      return a.lastMatchTimestamp - b.lastMatchTimestamp;
+      return (a.lastMatchTimestamp || 0) - (b.lastMatchTimestamp || 0);
     });
 
-    const rankedStandings = standings.map((item, idx) => ({
+    const rankedStandings = standingsForWeek.map((item, idx) => ({
       ...item,
       rank: idx + 1,
       season: targetSeason,
       weekId: resolvedWeekId,
+      userId: item.playerId,
+      username: item.playerName,
+      played: item.matches,
+      goalDiff: item.goalDifference,
     }));
 
     const now = Date.now();
@@ -844,7 +997,7 @@ async function startServer() {
     res.json({
       success: true,
       standings: rankedStandings,
-      totalMatches: seasonMatches.length,
+      totalMatches: serverPvPMatchesList.filter((m) => (m.weekId || '2026-09-13_week') === resolvedWeekId).length,
       serverTimeMs: now,
       lastSyncTimestamp: current10MinWindow,
       nextScheduledUpdateTimestamp: next10MinWindow,
@@ -1988,6 +2141,33 @@ async function startServer() {
           } catch {}
         });
         savePvPMatchesToDisk();
+      }
+
+      // 1.5 Sync PvP Standings from Supabase leaderboard table (Decoupled ranking persistence)
+      const standingsUrl = `${SUPABASE_LEADERBOARD_URL}/rest/v1/leaderboard?select=id,created_at,player_name,score&player_name=like.PVP_STANDING*&order=created_at.desc&limit=300`;
+      const standingsRes = await fetch(standingsUrl, {
+        headers: {
+          apikey: SUPABASE_LEADERBOARD_KEY,
+          Authorization: `Bearer ${SUPABASE_LEADERBOARD_KEY}`,
+          'Content-Type': 'application/json',
+        },
+      });
+      if (standingsRes.ok) {
+        const sRows = await standingsRes.json();
+        sRows.forEach((row: any) => {
+          try {
+            const raw = row.player_name.replace(/^PVP_STANDING:/, '');
+            const sObj: ServerPvPStanding = JSON.parse(raw);
+            if (sObj && sObj.weekId && sObj.playerId) {
+              const key = getStandingKey(sObj.weekId, sObj.playerId);
+              const existing = serverPvPStandingsMap.get(key);
+              if (!existing || (sObj.updatedAt || 0) > (existing.updatedAt || 0) || (sObj.matches || 0) > (existing.matches || 0)) {
+                serverPvPStandingsMap.set(key, sObj);
+              }
+            }
+          } catch {}
+        });
+        savePvPStandingsToDisk();
       }
 
       // 2. Sync tournament entries from Supabase leaderboard table

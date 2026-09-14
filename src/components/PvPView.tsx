@@ -41,6 +41,8 @@ import {
   fetchMatchHistoryFromSupabase,
   fetchWeeklyStandingsFromSupabase,
   fetchWeeklyStandingsWithSyncInfo,
+  fetchMatchedOpponentsThisWeek,
+  WeeklyMatchedOpponentsMap,
   syncPendingLocalMatchesToServer,
   StandingsSyncInfo,
   checkAndPerformV113Migration,
@@ -205,13 +207,50 @@ export const PvPView: React.FC<PvPViewProps> = ({
     return unsub;
   }, [selectedSeason, standingsFilter, userProfile.userId]);
 
-  // Helper: check if opponent already played against in the current phase/season
-  const isOpponentMatchedInPhase = (oppUserId: string) => {
-    return matchHistory.some(
-      (m) =>
-        m.opponentUserId === oppUserId &&
-        (m.season === currentSeasonInfo.seasonNumber || !m.season)
-    );
+  // Opponents matched in the current week per mode (1 match per week per mode: OVR and TACTICAL each 1 match per week, bidirectional)
+  const [weeklyMatchedOpponents, setWeeklyMatchedOpponents] = useState<WeeklyMatchedOpponentsMap>({
+    ovr: [],
+    tactical: [],
+    all: [],
+  });
+  const [matchLimitToast, setMatchLimitToast] = useState<string | null>(null);
+
+  // Helper: check if opponent already played against in current week per mode ('OVR' or 'TACTICAL')
+  const isOpponentMatchedInPhase = (oppUserId: string, mode?: 'OVR' | 'TACTICAL'): boolean => {
+    if (!oppUserId || oppUserId === userProfile.userId) return false;
+
+    if (mode === 'OVR') {
+      if (weeklyMatchedOpponents.ovr.includes(oppUserId)) return true;
+      return matchHistory.some((m) => {
+        const matchInWeek =
+          m.weekId === currentSeasonInfo.weekId ||
+          m.season === currentSeasonInfo.seasonNumber ||
+          (!m.season && !m.weekId);
+        const isPair =
+          (m.challengerUserId === userProfile.userId && m.opponentUserId === oppUserId) ||
+          (m.opponentUserId === userProfile.userId && m.challengerUserId === oppUserId);
+        const isOvr = !String(m.matchType || '').toUpperCase().includes('TACTICAL');
+        return matchInWeek && isPair && isOvr;
+      });
+    }
+
+    if (mode === 'TACTICAL') {
+      if (weeklyMatchedOpponents.tactical.includes(oppUserId)) return true;
+      return matchHistory.some((m) => {
+        const matchInWeek =
+          m.weekId === currentSeasonInfo.weekId ||
+          m.season === currentSeasonInfo.seasonNumber ||
+          (!m.season && !m.weekId);
+        const isPair =
+          (m.challengerUserId === userProfile.userId && m.opponentUserId === oppUserId) ||
+          (m.opponentUserId === userProfile.userId && m.challengerUserId === oppUserId);
+        const isTactical = String(m.matchType || '').toUpperCase().includes('TACTICAL');
+        return matchInWeek && isPair && isTactical;
+      });
+    }
+
+    // When mode is omitted: return true only if BOTH OVR and TACTICAL have been matched
+    return isOpponentMatchedInPhase(oppUserId, 'OVR') && isOpponentMatchedInPhase(oppUserId, 'TACTICAL');
   };
 
   // Halftime modified tactics
@@ -237,18 +276,22 @@ export const PvPView: React.FC<PvPViewProps> = ({
     refreshCommunityData(selectedSeason);
   }, [userProfile.userId, userProfile.username]);
 
-  // Refresh Online and Registered Users and Match History from Supabase
+  // Refresh Online and Registered Users, Match History, and Weekly Matched Opponents from Supabase / Server
   const refreshCommunityData = async (seasonToLoad = selectedSeason) => {
     setIsLoadingUsers(true);
     try {
-      const [online, all, hist] = await Promise.all([
+      const [online, all, hist, matchedMap] = await Promise.all([
         fetchOnlineUsersFromSupabase(userProfile.userId),
         fetchAllRegisteredUsersFromSupabase(userProfile.userId),
         fetchMatchHistoryFromSupabase(userProfile.userId),
+        fetchMatchedOpponentsThisWeek(userProfile.userId, currentSeasonInfo.weekId),
       ]);
       setOnlineUsers(online);
       setAllRegisteredUsers(all);
       setMatchHistory(hist);
+      if (matchedMap) {
+        setWeeklyMatchedOpponents(matchedMap);
+      }
       loadStandingsData(seasonToLoad, standingsFilter, all, hist);
     } catch (e) {
       console.warn('Failed to refresh Supabase PvP data', e);
@@ -447,6 +490,23 @@ export const PvPView: React.FC<PvPViewProps> = ({
       } catch (err) {}
     }
 
+    // Check weekly match restriction per mode (OVR & TACTICAL each 1 match per week between the same two users)
+    if (isOpponentMatchedInPhase(opponent.userId, mode)) {
+      const modeText = mode === 'OVR' ? 'OVR対戦' : '戦術対戦';
+      const otherModeText = mode === 'OVR' ? '戦術対戦' : 'OVR対戦';
+      const otherModeKey = mode === 'OVR' ? 'TACTICAL' : 'OVR';
+      const otherMatched = isOpponentMatchedInPhase(opponent.userId, otherModeKey);
+      setMatchLimitToast(
+        `@${opponent.username || '対戦相手'} とは今週のシーズン（${currentSeasonInfo.formattedRange}）で【${modeText}】をすでに対戦済みです。同じ相手とはOVR対戦と戦術対戦を週に各1回ずつ対戦可能です。${
+          otherMatched
+            ? '（今週は両モードとも対戦済みです。来週月曜0:00 JSTに再戦可能になります）'
+            : `（※【${otherModeText}】は今週まだ対戦可能です！）`
+        }`
+      );
+      setTimeout(() => setMatchLimitToast(null), 7000);
+      return;
+    }
+
     soundManager.playButtonClick();
     setIsLoadingOpponentTeam(true);
 
@@ -488,6 +548,15 @@ export const PvPView: React.FC<PvPViewProps> = ({
       if (prev.some((m) => m.id === rec.id)) return prev;
       return [rec, ...prev];
     });
+
+    if (rec.opponentUserId) {
+      const isTac = rec.matchType === 'TACTICAL';
+      setWeeklyMatchedOpponents((prev) => ({
+        ovr: isTac ? prev.ovr : Array.from(new Set([...prev.ovr, rec.opponentUserId])),
+        tactical: isTac ? Array.from(new Set([...prev.tactical, rec.opponentUserId])) : prev.tactical,
+        all: Array.from(new Set([...prev.all, rec.opponentUserId])),
+      }));
+    }
 
     // Save to Supabase & server, then immediately reload standings
     try {
@@ -705,6 +774,14 @@ export const PvPView: React.FC<PvPViewProps> = ({
 
         setFinalMatchRecord(record);
         setMatchHistory((prev) => [record, ...prev]);
+        if (record.opponentUserId) {
+          const isTac = record.matchType === 'TACTICAL';
+          setWeeklyMatchedOpponents((prev) => ({
+            ovr: isTac ? prev.ovr : Array.from(new Set([...prev.ovr, record.opponentUserId])),
+            tactical: isTac ? Array.from(new Set([...prev.tactical, record.opponentUserId])) : prev.tactical,
+            all: Array.from(new Set([...prev.all, record.opponentUserId])),
+          }));
+        }
         saveMatchRecordToSupabase(record).finally(() => {
           loadStandingsData(selectedSeason, standingsFilter);
         });
@@ -736,6 +813,22 @@ export const PvPView: React.FC<PvPViewProps> = ({
 
   return (
     <div id="pvp-view-container" className="space-y-6 max-w-5xl mx-auto pb-12 animate-fadeIn">
+      {/* 週間対戦制限トースト通知 */}
+      {matchLimitToast && (
+        <div className="p-4 rounded-2xl bg-amber-950/90 border-2 border-amber-500/70 text-amber-200 text-xs sm:text-sm flex items-start sm:items-center justify-between gap-3 shadow-2xl animate-fadeIn">
+          <div className="flex items-center gap-2.5">
+            <AlertCircle className="w-5 h-5 text-amber-400 shrink-0" />
+            <span className="font-medium">{matchLimitToast}</span>
+          </div>
+          <button
+            onClick={() => setMatchLimitToast(null)}
+            className="px-2.5 py-1 rounded-lg bg-amber-900/60 hover:bg-amber-800 text-amber-300 text-xs font-bold shrink-0 transition-colors"
+          >
+            閉じる
+          </button>
+        </div>
+      )}
+
       {/* Top Banner with Supabase Cloud Status */}
       <div className="bg-gradient-to-r from-slate-950 via-slate-900 to-indigo-950 border-2 border-indigo-500/40 rounded-3xl p-5 shadow-2xl relative overflow-hidden">
         <div className="absolute top-0 right-0 w-64 h-64 bg-indigo-500/10 rounded-full blur-3xl pointer-events-none" />
@@ -755,7 +848,7 @@ export const PvPView: React.FC<PvPViewProps> = ({
             </h2>
             <p className="text-xs text-slate-300 max-w-xl">
               Supabaseに登録された実在プレイヤーと対戦！ 毎週月曜0:00〜日曜23:59(JST)の週間ランキングを開催中。
-              OVR対戦・戦術対戦の2つのランキングで上位を目指しましょう！
+              同じ相手とは【OVR対戦】【戦術対戦】を週に各1回ずつ対戦可能です。
             </p>
           </div>
 
@@ -1105,7 +1198,7 @@ export const PvPView: React.FC<PvPViewProps> = ({
               const myOvr = getTeamEffectiveOvr(activePlayingSquad);
               const oppOvr = getTeamEffectiveOvr(preMatchOpponent.team);
               const ovrOdds = calculateOVRMatchOdds(myOvr, oppOvr);
-              const isAlreadyMatched = isOpponentMatchedInPhase(preMatchOpponent.userId);
+              const isAlreadyMatched = isOpponentMatchedInPhase(preMatchOpponent.userId, preMatchMode);
               const isSquadIncomplete = (activePlayingSquad.players?.length || 0) < 11;
 
               return (
@@ -1186,12 +1279,16 @@ export const PvPView: React.FC<PvPViewProps> = ({
                     </div>
                   )}
 
-                  {/* Duplicate Match Warning in Same Phase */}
+                  {/* Duplicate Match Warning in Same Week for this mode */}
                   {!isSquadIncomplete && isAlreadyMatched && (
-                    <div className="p-3 rounded-2xl bg-amber-950/40 border border-amber-500/40 text-amber-300 text-xs flex items-center gap-2 animate-fadeIn">
+                    <div className="p-3.5 rounded-2xl bg-amber-950/40 border border-amber-500/40 text-amber-300 text-xs flex items-center gap-2.5 animate-fadeIn">
                       <CheckCircle2 className="w-4 h-4 text-amber-400 shrink-0" />
                       <span>
-                        <strong>対戦済み (PLAYED):</strong> @{preMatchOpponent.username} とは今週のシーズン（Season {currentSeasonInfo.seasonNumber}）で既に対戦済みです。同一フェーズ内での再対戦は制限されています。
+                        <strong>対戦済み (WEEKLY LIMIT):</strong> @{preMatchOpponent.username} とは今週のシーズン（{currentSeasonInfo.formattedRange}）ですでに【{preMatchMode === 'OVR' ? 'OVR対戦' : '戦術対戦'}】を行っています。OVR対戦と戦術対戦はそれぞれ週1回ずつ対戦可能です。{
+                          isOpponentMatchedInPhase(preMatchOpponent.userId, preMatchMode === 'OVR' ? 'TACTICAL' : 'OVR')
+                            ? '（今週は両モードとも対戦済みです。来週月曜0:00 JSTに再戦可能になります）'
+                            : `（※【${preMatchMode === 'OVR' ? '戦術対戦' : 'OVR対戦'}】は今週まだ対戦可能です！）`
+                        }
                       </span>
                     </div>
                   )}
@@ -1225,7 +1322,7 @@ export const PvPView: React.FC<PvPViewProps> = ({
                       ) : isAlreadyMatched ? (
                         <>
                           <CheckCircle2 className="w-5 h-5 text-slate-500" />
-                          <span>今週のフェーズで対戦済み (MATCHED)</span>
+                          <span>今週【{preMatchMode === 'OVR' ? 'OVR対戦' : '戦術対戦'}】対戦済み (各週1回制限)</span>
                         </>
                       ) : (
                         <>
@@ -1606,29 +1703,55 @@ export const PvPView: React.FC<PvPViewProps> = ({
                       </div>
 
                       <div className="flex items-center gap-2 pt-2 border-t border-slate-800/80">
-                        {isOpponentMatchedInPhase(opp.userId) ? (
-                          <div className="flex-1 py-2 px-3 rounded-xl bg-slate-900/90 border border-slate-800 text-slate-400 text-xs font-bold flex items-center justify-center gap-1.5 shadow-inner">
-                            <CheckCircle2 className="w-3.5 h-3.5 text-emerald-400" />
-                            <span>対戦済み (MATCHED)</span>
-                          </div>
-                        ) : (
-                          <>
-                            <button
-                              onClick={() => handleOpenPreMatch(opp, 'OVR', 'REALTIME')}
-                              className="flex-1 py-2 px-3 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white font-heading font-black text-xs tracking-wider shadow-md transition-all flex items-center justify-center gap-1 cursor-pointer"
-                            >
-                              <Zap className="w-3.5 h-3.5 fill-white" />
-                              <span>CHALLENGE</span>
-                            </button>
-                            <button
-                              onClick={() => handleOpenPreMatch(opp, 'TACTICAL', 'REALTIME')}
-                              className="py-2 px-3 rounded-xl bg-blue-600/30 hover:bg-blue-600/50 text-blue-200 border border-blue-500/40 text-xs font-bold transition-colors flex items-center justify-center gap-1 cursor-pointer"
-                            >
-                              <Sliders className="w-3.5 h-3.5" />
-                              <span>戦術</span>
-                            </button>
-                          </>
-                        )}
+                        {(() => {
+                          const isOvrMatched = isOpponentMatchedInPhase(opp.userId, 'OVR');
+                          const isTacMatched = isOpponentMatchedInPhase(opp.userId, 'TACTICAL');
+
+                          if (isOvrMatched && isTacMatched) {
+                            return (
+                              <div className="flex-1 py-2 px-3 rounded-xl bg-slate-900/90 border border-slate-800 text-slate-400 text-xs font-bold flex items-center justify-center gap-1.5 shadow-inner">
+                                <CheckCircle2 className="w-3.5 h-3.5 text-emerald-400" />
+                                <span>今週対戦完了 (OVR・戦術済)</span>
+                              </div>
+                            );
+                          }
+
+                          return (
+                            <>
+                              {isOvrMatched ? (
+                                <div className="flex-1 py-2 px-2.5 rounded-xl bg-slate-900/90 border border-slate-800 text-slate-400 text-xs font-bold flex items-center justify-center gap-1">
+                                  <CheckCircle2 className="w-3.5 h-3.5 text-emerald-500" />
+                                  <span>OVR済</span>
+                                </div>
+                              ) : (
+                                <button
+                                  onClick={() => handleOpenPreMatch(opp, 'OVR', 'REALTIME')}
+                                  className="flex-1 py-2 px-3 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white font-heading font-black text-xs tracking-wider shadow-md transition-all flex items-center justify-center gap-1 cursor-pointer"
+                                  title="OVR対戦を開始 (週1回制限)"
+                                >
+                                  <Zap className="w-3.5 h-3.5 fill-white" />
+                                  <span>CHALLENGE</span>
+                                </button>
+                              )}
+
+                              {isTacMatched ? (
+                                <div className="py-2 px-3 rounded-xl bg-slate-900/90 border border-slate-800 text-slate-400 text-xs font-bold flex items-center justify-center gap-1">
+                                  <CheckCircle2 className="w-3.5 h-3.5 text-blue-400" />
+                                  <span>戦術済</span>
+                                </div>
+                              ) : (
+                                <button
+                                  onClick={() => handleOpenPreMatch(opp, 'TACTICAL', 'REALTIME')}
+                                  className="py-2 px-3 rounded-xl bg-blue-600/30 hover:bg-blue-600/50 text-blue-200 border border-blue-500/40 text-xs font-bold transition-colors flex items-center justify-center gap-1 cursor-pointer"
+                                  title="戦術対戦を開始 (週1回制限)"
+                                >
+                                  <Sliders className="w-3.5 h-3.5" />
+                                  <span>戦術</span>
+                                </button>
+                              )}
+                            </>
+                          );
+                        })()}
                       </div>
                     </div>
                   );
@@ -1709,33 +1832,59 @@ export const PvPView: React.FC<PvPViewProps> = ({
                       </div>
 
                       <div className="flex items-center gap-2 pt-2 border-t border-slate-800/80">
-                        {isOpponentMatchedInPhase(opp.userId) ? (
-                          <div className="flex-1 py-2 px-3 rounded-xl bg-slate-900/90 border border-slate-800 text-slate-400 text-xs font-bold flex items-center justify-center gap-1.5 shadow-inner">
-                            <CheckCircle2 className="w-3.5 h-3.5 text-emerald-400" />
-                            <span>対戦済み (MATCHED)</span>
-                          </div>
-                        ) : (
-                          <>
-                            <button
-                              onClick={() => handleOpenPreMatch(opp, 'OVR', isOnline ? 'REALTIME' : 'ASYNC')}
-                              className={`flex-1 py-2 px-3 rounded-xl text-xs font-bold transition-all flex items-center justify-center gap-1 cursor-pointer ${
-                                isOnline
-                                  ? 'bg-emerald-600/30 hover:bg-emerald-600/50 text-emerald-200 border border-emerald-500/40'
-                                  : 'bg-indigo-600/30 hover:bg-indigo-600/50 text-indigo-200 border border-indigo-500/40'
-                              }`}
-                            >
-                              <Zap className="w-3.5 h-3.5" />
-                              <span>{isOnline ? 'CHALLENGE' : 'ASYNC MATCH'}</span>
-                            </button>
-                            <button
-                              onClick={() => handleOpenPreMatch(opp, 'TACTICAL', isOnline ? 'REALTIME' : 'ASYNC')}
-                              className="py-2 px-3 rounded-xl bg-blue-600/30 hover:bg-blue-600/50 text-blue-200 border border-blue-500/40 text-xs font-bold transition-colors flex items-center justify-center gap-1 cursor-pointer"
-                            >
-                              <Sliders className="w-3.5 h-3.5" />
-                              <span>戦術対戦</span>
-                            </button>
-                          </>
-                        )}
+                        {(() => {
+                          const isOvrMatched = isOpponentMatchedInPhase(opp.userId, 'OVR');
+                          const isTacMatched = isOpponentMatchedInPhase(opp.userId, 'TACTICAL');
+
+                          if (isOvrMatched && isTacMatched) {
+                            return (
+                              <div className="flex-1 py-2 px-3 rounded-xl bg-slate-900/90 border border-slate-800 text-slate-400 text-xs font-bold flex items-center justify-center gap-1.5 shadow-inner">
+                                <CheckCircle2 className="w-3.5 h-3.5 text-emerald-400" />
+                                <span>今週対戦完了 (OVR・戦術済)</span>
+                              </div>
+                            );
+                          }
+
+                          return (
+                            <>
+                              {isOvrMatched ? (
+                                <div className="flex-1 py-2 px-2.5 rounded-xl bg-slate-900/90 border border-slate-800 text-slate-400 text-xs font-bold flex items-center justify-center gap-1">
+                                  <CheckCircle2 className="w-3.5 h-3.5 text-emerald-500" />
+                                  <span>OVR対戦済</span>
+                                </div>
+                              ) : (
+                                <button
+                                  onClick={() => handleOpenPreMatch(opp, 'OVR', isOnline ? 'REALTIME' : 'ASYNC')}
+                                  className={`flex-1 py-2 px-3 rounded-xl text-xs font-bold transition-all flex items-center justify-center gap-1 cursor-pointer ${
+                                    isOnline
+                                      ? 'bg-emerald-600/30 hover:bg-emerald-600/50 text-emerald-200 border border-emerald-500/40'
+                                      : 'bg-indigo-600/30 hover:bg-indigo-600/50 text-indigo-200 border border-indigo-500/40'
+                                  }`}
+                                  title="OVR対戦を開始 (週1回制限)"
+                                >
+                                  <Zap className="w-3.5 h-3.5" />
+                                  <span>{isOnline ? 'CHALLENGE (OVR)' : 'ASYNC (OVR)'}</span>
+                                </button>
+                              )}
+
+                              {isTacMatched ? (
+                                <div className="py-2 px-3 rounded-xl bg-slate-900/90 border border-slate-800 text-slate-400 text-xs font-bold flex items-center justify-center gap-1">
+                                  <CheckCircle2 className="w-3.5 h-3.5 text-blue-400" />
+                                  <span>戦術済</span>
+                                </div>
+                              ) : (
+                                <button
+                                  onClick={() => handleOpenPreMatch(opp, 'TACTICAL', isOnline ? 'REALTIME' : 'ASYNC')}
+                                  className="py-2 px-3 rounded-xl bg-blue-600/30 hover:bg-blue-600/50 text-blue-200 border border-blue-500/40 text-xs font-bold transition-colors flex items-center justify-center gap-1 cursor-pointer"
+                                  title="戦術対戦を開始 (週1回制限)"
+                                >
+                                  <Sliders className="w-3.5 h-3.5" />
+                                  <span>戦術対戦</span>
+                                </button>
+                              )}
+                            </>
+                          );
+                        })()}
                       </div>
                     </div>
                   );
@@ -1931,24 +2080,59 @@ export const PvPView: React.FC<PvPViewProps> = ({
                     </div>
 
                     <div className="flex items-center gap-2">
-                      {isOpponentMatchedInPhase(user.userId) ? (
-                        <div className="py-2 px-3.5 rounded-xl bg-slate-900/90 border border-slate-800 text-slate-400 text-xs font-bold flex items-center gap-1.5 shadow-inner">
-                          <CheckCircle2 className="w-3.5 h-3.5 text-emerald-400" />
-                          <span>対戦済み (MATCHED)</span>
-                        </div>
-                      ) : (
-                        <button
-                          onClick={() => handleOpenPreMatch(user, 'OVR', isOnline ? 'REALTIME' : 'ASYNC')}
-                          className={`py-2 px-3.5 rounded-xl font-bold text-xs transition-all flex items-center gap-1.5 shadow-md cursor-pointer ${
-                            isOnline
-                              ? 'bg-emerald-600 hover:bg-emerald-500 text-white font-heading font-black'
-                              : 'bg-indigo-600 hover:bg-indigo-500 text-white font-heading font-black'
-                          }`}
-                        >
-                          <Zap className="w-3.5 h-3.5 fill-white" />
-                          <span>{isOnline ? 'CHALLENGE' : 'ASYNC MATCH'}</span>
-                        </button>
-                      )}
+                      {(() => {
+                        const isOvrMatched = isOpponentMatchedInPhase(user.userId, 'OVR');
+                        const isTacMatched = isOpponentMatchedInPhase(user.userId, 'TACTICAL');
+
+                        if (isOvrMatched && isTacMatched) {
+                          return (
+                            <div className="py-2 px-3.5 rounded-xl bg-slate-900/90 border border-slate-800 text-slate-400 text-xs font-bold flex items-center gap-1.5 shadow-inner">
+                              <CheckCircle2 className="w-3.5 h-3.5 text-emerald-400" />
+                              <span>今週対戦完了 (OVR・戦術済)</span>
+                            </div>
+                          );
+                        }
+
+                        return (
+                          <>
+                            {isOvrMatched ? (
+                              <div className="py-2 px-3 rounded-xl bg-slate-900/90 border border-slate-800 text-slate-400 text-xs font-bold flex items-center gap-1">
+                                <CheckCircle2 className="w-3.5 h-3.5 text-emerald-500" />
+                                <span>OVR済</span>
+                              </div>
+                            ) : (
+                              <button
+                                onClick={() => handleOpenPreMatch(user, 'OVR', isOnline ? 'REALTIME' : 'ASYNC')}
+                                className={`py-2 px-3.5 rounded-xl font-bold text-xs transition-all flex items-center gap-1.5 shadow-md cursor-pointer ${
+                                  isOnline
+                                    ? 'bg-emerald-600 hover:bg-emerald-500 text-white font-heading font-black'
+                                    : 'bg-indigo-600 hover:bg-indigo-500 text-white font-heading font-black'
+                                }`}
+                                title="OVR対戦を開始 (週1回制限)"
+                              >
+                                <Zap className="w-3.5 h-3.5 fill-white" />
+                                <span>{isOnline ? 'CHALLENGE (OVR)' : 'ASYNC (OVR)'}</span>
+                              </button>
+                            )}
+
+                            {isTacMatched ? (
+                              <div className="py-2 px-3 rounded-xl bg-slate-900/90 border border-slate-800 text-slate-400 text-xs font-bold flex items-center gap-1">
+                                <CheckCircle2 className="w-3.5 h-3.5 text-blue-400" />
+                                <span>戦術済</span>
+                              </div>
+                            ) : (
+                              <button
+                                onClick={() => handleOpenPreMatch(user, 'TACTICAL', isOnline ? 'REALTIME' : 'ASYNC')}
+                                className="py-2 px-3 rounded-xl bg-blue-600/30 hover:bg-blue-600/50 text-blue-200 border border-blue-500/40 text-xs font-bold transition-colors flex items-center gap-1 cursor-pointer"
+                                title="戦術対戦を開始 (週1回制限)"
+                              >
+                                <Sliders className="w-3.5 h-3.5" />
+                                <span>戦術対戦</span>
+                              </button>
+                            )}
+                          </>
+                        );
+                      })()}
                     </div>
                   </div>
                 );
