@@ -1523,7 +1523,296 @@ export interface StandingsSyncInfo {
   nextScheduledUpdateTimestamp: number;
   updateIntervalMinutes: number;
 }
+type ManualStandingMode = 'OVR' | 'TACTICAL';
 
+interface ManualStandingOverride {
+  weekId: string;
+  seasonNumber: number;
+  playerId: string;
+  playerName: string;
+  teamName: string;
+  teamOvr: number;
+  matchType: ManualStandingMode;
+
+  points: number;
+  matches: number;
+  wins: number;
+  draws: number;
+  losses: number;
+
+  goalsFor: number;
+  goalsAgainst: number;
+  goalDifference: number;
+
+  updatedAt: number;
+}
+
+const MANUAL_STANDING_PREFIX = 'PVP_MANUAL_STANDING:';
+
+export async function saveMyManualRankingPreset(
+  profile: BetaUserProfile
+): Promise<{ success: boolean; error?: string }> {
+  try {
+    const seasonNumber = getSeasonNumberForTimestamp(Date.now());
+    const seasonInfo = getSeasonInfo(seasonNumber);
+
+    const teamOvr = profile.team
+      ? getTeamEffectiveOvr(profile.team)
+      : 85;
+
+    const common = {
+      weekId: seasonInfo.weekId,
+      seasonNumber,
+      playerId: profile.userId,
+      playerName: profile.username || 'Manager',
+      teamName: profile.team?.name || 'Best XI',
+      teamOvr,
+      updatedAt: Date.now(),
+    };
+
+    const records: ManualStandingOverride[] = [
+      {
+        ...common,
+        matchType: 'OVR',
+        points: 72,
+        matches: 24,
+        wins: 24,
+        draws: 0,
+        losses: 0,
+        goalsFor: 60,
+        goalsAgainst: 12,
+        goalDifference: 48,
+      },
+      {
+        ...common,
+        matchType: 'TACTICAL',
+        points: 73,
+        matches: 25,
+        wins: 24,
+        draws: 1,
+        losses: 0,
+        goalsFor: 58,
+        goalsAgainst: 14,
+        goalDifference: 44,
+      },
+    ];
+
+    const rows = records.map((record) => ({
+      player_name:
+        MANUAL_STANDING_PREFIX + JSON.stringify(record),
+      score: record.points,
+    }));
+
+    const { error } = await supabase
+      .from('leaderboard')
+      .insert(rows);
+
+    if (error) {
+      return {
+        success: false,
+        error: error.message,
+      };
+    }
+
+    return { success: true };
+  } catch (e: any) {
+    return {
+      success: false,
+      error: e?.message || 'Unknown error',
+    };
+  }
+}
+
+async function applyManualStandingOverrides(
+  standings: BetaStandingEntry[],
+  targetWeekId: string,
+  matchType: 'ALL' | 'OVR' | 'TACTICAL'
+): Promise<BetaStandingEntry[]> {
+  try {
+    const { data, error } = await supabase
+      .from('leaderboard')
+      .select('id, created_at, player_name, score')
+      .like('player_name', 'PVP_MANUAL_STANDING:%')
+      .order('created_at', { ascending: false })
+      .limit(300);
+
+    if (error || !data || data.length === 0) {
+      return standings;
+    }
+
+    const latest = new Map<string, ManualStandingOverride>();
+
+    for (const row of data) {
+      try {
+        if (
+          typeof row.player_name !== 'string' ||
+          !row.player_name.startsWith(MANUAL_STANDING_PREFIX)
+        ) {
+          continue;
+        }
+
+        const raw = row.player_name.replace(
+          MANUAL_STANDING_PREFIX,
+          ''
+        );
+
+        const obj = JSON.parse(raw) as ManualStandingOverride;
+
+        if (obj.weekId !== targetWeekId) continue;
+
+        if (
+          obj.matchType !== 'OVR' &&
+          obj.matchType !== 'TACTICAL'
+        ) {
+          continue;
+        }
+
+        const key = `${obj.playerId}:${obj.matchType}`;
+
+        if (!latest.has(key)) {
+          latest.set(key, obj);
+        }
+      } catch {}
+    }
+
+    if (latest.size === 0) {
+      return standings;
+    }
+
+    const result = standings.map((entry) => ({
+      ...entry,
+    }));
+
+    const playerIds = new Set(
+      Array.from(latest.values()).map((x) => x.playerId)
+    );
+
+    for (const playerId of playerIds) {
+      let selected: ManualStandingOverride | null = null;
+
+      if (matchType === 'OVR') {
+        selected =
+          latest.get(`${playerId}:OVR`) || null;
+      }
+
+      if (matchType === 'TACTICAL') {
+        selected =
+          latest.get(`${playerId}:TACTICAL`) || null;
+      }
+
+      if (matchType === 'ALL') {
+        const ovr =
+          latest.get(`${playerId}:OVR`);
+
+        const tactical =
+          latest.get(`${playerId}:TACTICAL`);
+
+        if (ovr && tactical) {
+          const newest =
+            ovr.updatedAt >= tactical.updatedAt
+              ? ovr
+              : tactical;
+
+          selected = {
+            ...newest,
+            points: ovr.points + tactical.points,
+            matches: ovr.matches + tactical.matches,
+            wins: ovr.wins + tactical.wins,
+            draws: ovr.draws + tactical.draws,
+            losses: ovr.losses + tactical.losses,
+            goalsFor: ovr.goalsFor + tactical.goalsFor,
+            goalsAgainst:
+              ovr.goalsAgainst + tactical.goalsAgainst,
+            goalDifference:
+              ovr.goalDifference + tactical.goalDifference,
+          };
+        }
+      }
+
+      if (!selected) continue;
+
+      const existingIndex =
+        result.findIndex(
+          (entry) =>
+            entry.userId === selected!.playerId
+        );
+
+      const existing =
+        existingIndex >= 0
+          ? result[existingIndex]
+          : undefined;
+
+      const entry: BetaStandingEntry = {
+        rank: existing?.rank || 0,
+        userId: selected.playerId,
+        username: selected.playerName,
+        teamName: selected.teamName,
+        teamOvr: selected.teamOvr,
+        points: selected.points,
+        matchesCount: selected.matches,
+        wins: selected.wins,
+        draws: selected.draws,
+        losses: selected.losses,
+        goalsFor: selected.goalsFor,
+        goalsAgainst: selected.goalsAgainst,
+        goalDifference: selected.goalDifference,
+        recent10Matches:
+          existing?.recent10Matches || [],
+        season: selected.seasonNumber,
+      };
+
+      if (existingIndex >= 0) {
+        result[existingIndex] = entry;
+      } else {
+        result.push(entry);
+      }
+    }
+
+    result.sort((a, b) => {
+      if (b.points !== a.points) {
+        return b.points - a.points;
+      }
+
+      if (
+        b.goalDifference !==
+        a.goalDifference
+      ) {
+        return (
+          b.goalDifference -
+          a.goalDifference
+        );
+      }
+
+      if (b.goalsFor !== a.goalsFor) {
+        return b.goalsFor - a.goalsFor;
+      }
+
+      if (b.wins !== a.wins) {
+        return b.wins - a.wins;
+      }
+
+      if (b.teamOvr !== a.teamOvr) {
+        return b.teamOvr - a.teamOvr;
+      }
+
+      return a.userId.localeCompare(
+        b.userId
+      );
+    });
+
+    return result.map((entry, index) => ({
+      ...entry,
+      rank: index + 1,
+    }));
+  } catch (e) {
+    console.warn(
+      'Manual standing override error:',
+      e
+    );
+
+    return standings;
+  }
+}
 /**
  * Synchronize any local pending match records to server authority
  */
@@ -1615,7 +1904,11 @@ export async function fetchWeeklyStandingsWithSyncInfo(
         }
 
         return {
-          standings: serverStandings,
+          standings: await applyManualStandingOverrides(
+  serverStandings,
+  targetWeekId,
+  matchType
+),
           totalMatches: data.totalMatches || 0,
           serverTimeMs: data.serverTimeMs || now,
           lastSyncTimestamp: data.lastSyncTimestamp || fallbackLastSync,
@@ -1702,7 +1995,11 @@ export async function fetchWeeklyStandingsFromSupabase(
             season: seasonNumber,
           });
         }
-        return serverStandings;
+        return await applyManualStandingOverrides(
+  serverStandings,
+  targetWeekId,
+  matchType
+);
       }
     }
   } catch (e) {
@@ -1773,7 +2070,16 @@ export async function fetchWeeklyStandingsFromSupabase(
           if (b.goalsFor !== a.goalsFor) return b.goalsFor - a.goalsFor;
           return b.wins - a.wins;
         });
-        return list.map((entry, idx) => ({ ...entry, rank: idx + 1 }));
+        const rankedList = list.map((entry, idx) => ({
+  ...entry,
+  rank: idx + 1,
+}));
+
+return await applyManualStandingOverrides(
+  rankedList,
+  targetWeekId,
+  matchType
+);
       }
     }
   } catch (e) {
@@ -1931,7 +2237,13 @@ export async function fetchWeeklyStandingsFromSupabase(
   }
 
   const allSeasonMatches = Array.from(seasonMatchesMap.values());
-  return computeWeeklyStandings(allUsers, profile, allSeasonMatches, seasonNumber, matchType);
+  const computed = computeWeeklyStandings(...);
+
+return await applyManualStandingOverrides(
+  computed,
+  targetWeekId,
+  matchType
+);
 }
 
 /**
