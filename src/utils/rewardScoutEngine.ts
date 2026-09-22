@@ -398,7 +398,37 @@ export function ensureApologyGiftDistributed(userId: string): GiftBoxItem[] {
       allPresents.unshift(apologyV131Gift);
       updated = true;
     }
+        // Youotsune限定配布：レジェンド確定 ×10
+    const youotsuneLegendId = `youotsune_launch_legend10_${userId}`;
+    if (!allPresents.some((p) => p.id === youotsuneLegendId)) {
+      allPresents.unshift({
+        id: youotsuneLegendId,
+        userId,
+        title: '【Youotsune記念配布】レジェンド確定スカウト ×10',
+        description: 'Youotsune限定で「レジェンド確定スカウト ×10」を配布します。',
+        rewardType: 'legend_guaranteed',
+        amount: 10,
+        isClaimed: false,
+        createdAt: Date.now(),
+      });
+      updated = true;
+    }
 
+    // Youotsune限定配布：紫確定 ×10
+    const youotsunePurpleId = `youotsune_launch_purple10_${userId}`;
+    if (!allPresents.some((p) => p.id === youotsunePurpleId)) {
+      allPresents.unshift({
+        id: youotsunePurpleId,
+        userId,
+        title: '【Youotsune記念配布】紫確定スカウト ×10',
+        description: 'Youotsune限定で「紫確定スカウト ×10」を配布します。',
+        rewardType: 'purple_guaranteed',
+        amount: 10,
+        isClaimed: false,
+        createdAt: Date.now(),
+      });
+      updated = true;
+    }
     if (updated) {
       saveAllPresents(allPresents);
     }
