@@ -2237,8 +2237,13 @@ return await applyManualStandingOverrides(
   }
 
   const allSeasonMatches = Array.from(seasonMatchesMap.values());
-  const computed = computeWeeklyStandings(...);
-
+  const computed = computeWeeklyStandings(
+  allUsers,
+  profile,
+  allSeasonMatches,
+  seasonNumber,
+  matchType
+);
 return await applyManualStandingOverrides(
   computed,
   targetWeekId,
