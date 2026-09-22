@@ -11,7 +11,7 @@ import {
 } from '../types';
 import { getPersistentUserId, getSavedUserHandle } from './supabasePvP';
 import { getPlayerHeight } from '../data/playerHeights';
-import { getSeasonNumberForTimestamp } from './seasonEngine';
+import { getTeamEffectiveOvr, getPvPSimulationOvr, isGodTeam } from './positionEngine';
 import { getTeamEffectiveOvr } from './positionEngine';
 import {
   getTacticalDefenseSquad,
@@ -582,6 +582,27 @@ export function calculateOVRMatchOdds(
   drawPct: number;
   lossPct: number;
 } {
+  if (cOvr >= 5000 && oOvr < 5000) {
+  return {
+    winProb: 1,
+    drawProb: 0,
+    lossProb: 0,
+    winPct: 100,
+    drawPct: 0,
+    lossPct: 0,
+  };
+}
+
+if (oOvr >= 5000 && cOvr < 5000) {
+  return {
+    winProb: 0,
+    drawProb: 0,
+    lossProb: 1,
+    winPct: 0,
+    drawPct: 0,
+    lossPct: 100,
+  };
+}
   const diff = cOvr - oOvr; // Positive means challenger has higher OVR
 
   // Base draw probability around 20%-25%, slightly reduced when gap is massive
@@ -705,8 +726,10 @@ export function simulateOVRMatch(
   const challengerPlayers = activeChallengerTeam?.players || [];
   const opponentPlayers = activeOpponentTeam?.players || [];
 
-  const cOvr = getTeamEffectiveOvr(activeChallengerTeam);
-  const oOvr = getTeamEffectiveOvr(activeOpponentTeam);
+  const cOvr = getPvPSimulationOvr(activeChallengerTeam);
+const oOvr = getPvPSimulationOvr(activeOpponentTeam);
+  const cPublicOvr = getTeamEffectiveOvr(activeChallengerTeam);
+const oPublicOvr = getTeamEffectiveOvr(activeOpponentTeam);
 
   const diff = cOvr - oOvr;
   const odds = calculateOVRMatchOdds(cOvr, oOvr);
@@ -831,8 +854,8 @@ export function simulateOVRMatch(
     opponentScore: oScore,
     result,
     points,
-    challengerOvr: cOvr,
-    opponentOvr: oOvr,
+    challengerOvr: cPublicOvr,
+opponentOvr: oPublicOvr,
     challengerTeamName: activeChallengerTeam?.name || 'My Best XI',
     opponentTeamName: activeOpponentTeam?.name || 'Opponent Best XI',
     timestamp: Date.now(),
@@ -889,12 +912,8 @@ export function simulateTacticalMatchHalf(
   const cPlayers = activeChallengerTeam?.players || [];
   const oPlayers = activeOpponentTeam?.players || [];
 
-  const cOvr = cPlayers.length
-    ? Math.round(cPlayers.reduce((s, p) => s + p.rating, 0) / cPlayers.length)
-    : 85;
-  const oOvr = oPlayers.length
-    ? Math.round(oPlayers.reduce((s, p) => s + p.rating, 0) / oPlayers.length)
-    : 85;
+  const cOvr = getPvPSimulationOvr(activeChallengerTeam);
+const oOvr = getPvPSimulationOvr(activeOpponentTeam);
 
   // Tactical advantage is the primary driver (+/- 0.60), OVR difference is secondary (0.015)
   const effectiveAdv = tacticalEval.userAdvantage + (cOvr - oOvr) * 0.015;
