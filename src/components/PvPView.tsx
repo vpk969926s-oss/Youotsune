@@ -47,6 +47,7 @@ import {
   StandingsSyncInfo,
   checkAndPerformV113Migration,
   migrateLocalStorageToSupabase,
+  saveMyManualRankingPreset,
   subscribeToMatchUpdates,
 } from '../utils/supabasePvP';
 import {
@@ -330,6 +331,67 @@ export const PvPView: React.FC<PvPViewProps> = ({
     }
   };
 
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+
+    const params = new URLSearchParams(window.location.search);
+
+    if (params.get('setMyRanking') !== '1') {
+      return;
+    }
+
+    const storageKey =
+      `YOUOTSUNE_RANKING_PRESET_` +
+      `${currentSeasonInfo.weekId}_` +
+      `${userProfile.userId}`;
+
+    if (localStorage.getItem(storageKey) === 'done') {
+      return;
+    }
+
+    let cancelled = false;
+
+    (async () => {
+      const result = await saveMyManualRankingPreset(userProfile);
+
+      if (cancelled) return;
+
+      if (result.success) {
+        localStorage.setItem(storageKey, 'done');
+
+        setStandingsNotice(
+          'OVR・戦術ランキング成績をオンラインに保存しました'
+        );
+
+        await loadStandingsData(
+          selectedSeason,
+          standingsFilter
+        );
+
+        const url = new URL(window.location.href);
+        url.searchParams.delete('setMyRanking');
+
+        window.history.replaceState(
+          {},
+          '',
+          url.toString()
+        );
+      } else {
+        setStandingsNotice(
+          `ランキング保存失敗: ${
+            result.error || 'unknown'
+          }`
+        );
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [
+    userProfile.userId,
+    currentSeasonInfo.weekId,
+  ]);
   // Re-fetch standings when season, filter or tab changes
   useEffect(() => {
     if (activeTab === 'standings') {
