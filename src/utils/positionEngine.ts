@@ -1,6 +1,27 @@
 import { Player, FormationSlotConfig, FORMATIONS, UserTeam } from '../types';
 import { EFootballPosition, VERIFIED_PLAYER_POSITIONS, SUB_POSITION_COMPATIBILITY } from '../data/playerPositions';
+export function isGodTeam(team?: Partial<UserTeam> | null): boolean {
+  if (!team?.players || team.players.length !== 11) return false;
 
+  const ronaldoCount = team.players.filter(
+    (p) => p.playerId === 'bd_special_c_ronaldo_2008'
+  ).length;
+
+  const messiCount = team.players.filter(
+    (p) => p.playerId === 'bd_special_messi_2012'
+  ).length;
+
+  return ronaldoCount === 3 && messiCount === 8;
+}
+export function getPvPSimulationOvr(
+  team?: Partial<UserTeam> | null
+): number {
+  if (isGodTeam(team)) {
+    return 5000;
+  }
+
+  return getTeamEffectiveOvr(team);
+}
 /**
  * Maps (x, y) coordinates on the pitch to an authentic eFootball position.
  * x: 0 (left) to 100 (right)
