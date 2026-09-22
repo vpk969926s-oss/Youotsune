@@ -11,7 +11,7 @@ import {
 } from '../types';
 import { getPersistentUserId, getSavedUserHandle } from './supabasePvP';
 import { getPlayerHeight } from '../data/playerHeights';
-import { getTeamEffectiveOvr, getPvPSimulationOvr, isGodTeam } from './positionEngine';
+import { getTeamEffectiveOvr, getPvPSimulationOvr } from './positionEngine';
 import { getTeamEffectiveOvr } from './positionEngine';
 import {
   getTacticalDefenseSquad,
@@ -768,18 +768,18 @@ const oPublicOvr = getTeamEffectiveOvr(activeOpponentTeam);
     {
       minute: 1,
       type: 'whistle',
-      textJa: `主審のホイッスルでOVR総合値マッチがキックオフ！ (OVR ${cOvr} ${challenger.username} vs OVR ${oOvr} ${opponent.username} · 勝率予想: ${odds.winPct}% / 引分: ${odds.drawPct}% / 敗率: ${odds.lossPct}%)`,
-      textEn: `Kickoff! OVR Match begins (OVR ${cOvr} vs OVR ${oOvr} · Win Odds: ${odds.winPct}%)`,
-      textEs: `¡Comienza el Partido de OVR! (OVR ${cOvr} vs OVR ${oOvr})`,
+      textJa: `主審のホイッスルでOVR総合値マッチがキックオフ！ (OVR ${cPublicOvr} ${challenger.username} vs OVR ${oPublicOvr} ${opponent.username} · 勝率予想: ${odds.winPct}% / 引分: ${odds.drawPct}% / 敗率: ${odds.lossPct}%)`,
+textEn: `Kickoff! OVR Match begins (OVR ${cPublicOvr} vs OVR ${oPublicOvr} · Win Odds: ${odds.winPct}%)`,
+textEs: `¡Comienza el Partido de OVR! (OVR ${cPublicOvr} vs OVR ${oPublicOvr})`,
     },
     {
       minute: 16,
       type: 'chance',
-      textJa: diff > 2
-        ? `高いチーム総合値(OVR ${cOvr} · 予想勝率${odds.winPct}%)を誇る${challenger.username}が前線から主導権を掌握！`
+            textJa: diff > 2
+        ? `高いチーム総合値(OVR ${cPublicOvr} · 予想勝率${odds.winPct}%)を誇る${challenger.username}が前線から主導権を掌握！`
         : diff < -2
-        ? `圧倒的総合値(OVR ${oOvr} · 相手予想勝率${odds.lossPct}%)の${opponent.username}が猛攻を仕掛ける！`
-        : `互角の総合値対決(OVR ${cOvr} vs ${oOvr})！ 予想勝率${odds.winPct}%対${odds.lossPct}%で白熱の一進一退！`,
+        ? `圧倒的総合値(OVR ${oPublicOvr} · 相手予想勝率${odds.lossPct}%)の${opponent.username}が猛攻を仕掛ける！`
+        : `互角の総合値対決(OVR ${cPublicOvr} vs ${oPublicOvr})！ 予想勝率${odds.winPct}%対${odds.lossPct}%で白熱の一進一退！`,
       textEn: 'Early pressure unfolds on the pitch as both squads test each other.',
       textEs: 'Presión intensa en los primeros minutos de juego.',
     },
@@ -831,7 +831,7 @@ const oPublicOvr = getTeamEffectiveOvr(activeOpponentTeam);
   events.push({
     minute: 90,
     type: 'whistle',
-    textJa: `試合終了！ 総合値マッチ結果: ${cScore} - ${oScore} (OVR ${cOvr} vs ${oOvr})`,
+    textJa: `試合終了！ 総合値マッチ結果: ${cScore} - ${oScore} (OVR ${cPublicOvr} vs ${oPublicOvr})`,
     textEn: `Full Time! Final Score: ${cScore} - ${oScore}`,
     textEs: `¡Final del partido! Marcador: ${cScore} - ${oScore}`,
   });
