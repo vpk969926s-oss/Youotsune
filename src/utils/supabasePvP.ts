@@ -1623,6 +1623,179 @@ export async function saveMyManualRankingPreset(
   }
 }
 
+type PostPresetStats = {
+  points: number;
+  matches: number;
+  wins: number;
+  draws: number;
+  losses: number;
+  goalsFor: number;
+  goalsAgainst: number;
+  goalDifference: number;
+};
+
+async function getPostPresetStats(
+  playerId: string,
+  mode: 'OVR' | 'TACTICAL',
+  targetWeekId: string,
+  afterTimestamp: number
+): Promise<PostPresetStats> {
+  const stats: PostPresetStats = {
+    points: 0,
+    matches: 0,
+    wins: 0,
+    draws: 0,
+    losses: 0,
+    goalsFor: 0,
+    goalsAgainst: 0,
+    goalDifference: 0,
+  };
+
+  const seenMatchIds = new Set<string>();
+
+  const addMatch = (
+    matchId: string,
+    challengerId: string,
+    opponentId: string,
+    challengerScore: number,
+    opponentScore: number
+  ) => {
+    if (seenMatchIds.has(matchId)) return;
+
+    const isChallenger = challengerId === playerId;
+    const isOpponent = opponentId === playerId;
+
+    if (!isChallenger && !isOpponent) return;
+
+    seenMatchIds.add(matchId);
+
+    const goalsFor = isChallenger
+      ? challengerScore
+      : opponentScore;
+
+    const goalsAgainst = isChallenger
+      ? opponentScore
+      : challengerScore;
+
+    stats.matches += 1;
+    stats.goalsFor += goalsFor;
+    stats.goalsAgainst += goalsAgainst;
+
+    if (goalsFor > goalsAgainst) {
+      stats.wins += 1;
+      stats.points += 3;
+    } else if (goalsFor === goalsAgainst) {
+      stats.draws += 1;
+      stats.points += 1;
+    } else {
+      stats.losses += 1;
+    }
+
+    stats.goalDifference =
+      stats.goalsFor - stats.goalsAgainst;
+  };
+
+  // 通常の matches テーブルから、
+  // プリセット設定後の試合だけ取得
+  try {
+    const { data, error } = await supabase
+      .from('matches')
+      .select(
+        'id, match_id, week_id, challenger_id, opponent_id, challenger_score, opponent_score, match_type, created_at'
+      )
+      .eq('week_id', targetWeekId)
+      .eq('match_type', mode)
+      .gte(
+        'created_at',
+        new Date(afterTimestamp).toISOString()
+      )
+      .or(
+        `challenger_id.eq.${playerId},opponent_id.eq.${playerId}`
+      );
+
+    if (!error && data) {
+      for (const row of data) {
+        const timestamp = row.created_at
+          ? new Date(row.created_at).getTime()
+          : 0;
+
+        // プリセット以前・同時刻の記録は除外
+        if (timestamp <= afterTimestamp) continue;
+
+        addMatch(
+          String(row.match_id || `db_${row.id}`),
+          String(row.challenger_id || ''),
+          String(row.opponent_id || ''),
+          Number(row.challenger_score || 0),
+          Number(row.opponent_score || 0)
+        );
+      }
+    }
+  } catch (e) {
+    console.warn(
+      'Post preset matches table scan error:',
+      e
+    );
+  }
+
+  // leaderboard の PVP_MATCH もフォールバックとして確認
+  // matches テーブルと重複する試合は seenMatchIds で除外
+  try {
+    const { data, error } = await supabase
+      .from('leaderboard')
+      .select('id, created_at, player_name, score')
+      .like('player_name', 'PVP_MATCH:%')
+      .order('created_at', { ascending: false })
+      .limit(500);
+
+    if (!error && data) {
+      for (const row of data) {
+        try {
+          const raw = String(row.player_name).replace(
+            /^PVP_MATCH:/,
+            ''
+          );
+
+          const match = JSON.parse(raw) as BetaMatchRecord;
+
+          if (!match || !match.id) continue;
+
+          if (match.weekId !== targetWeekId) continue;
+
+          const storedMode =
+            String(match.matchType || 'OVR').toUpperCase();
+
+          if (storedMode !== mode) continue;
+
+          if (
+            !match.timestamp ||
+            match.timestamp <= afterTimestamp
+          ) {
+            continue;
+          }
+
+          addMatch(
+            match.id,
+            match.challengerUserId,
+            match.opponentUserId,
+            Number(match.challengerScore || 0),
+            Number(match.opponentScore || 0)
+          );
+        } catch {
+          // 壊れたPVP_MATCHレコードは無視
+        }
+      }
+    }
+  } catch (e) {
+    console.warn(
+      'Post preset leaderboard scan error:',
+      e
+    );
+  }
+
+  return stats;
+}
+
 async function applyManualStandingOverrides(
   standings: BetaStandingEntry[],
   targetWeekId: string,
@@ -1640,13 +1813,16 @@ async function applyManualStandingOverrides(
       return standings;
     }
 
-    const latest = new Map<string, ManualStandingOverride>();
+    const latest =
+      new Map<string, ManualStandingOverride>();
 
     for (const row of data) {
       try {
         if (
           typeof row.player_name !== 'string' ||
-          !row.player_name.startsWith(MANUAL_STANDING_PREFIX)
+          !row.player_name.startsWith(
+            MANUAL_STANDING_PREFIX
+          )
         ) {
           continue;
         }
@@ -1656,7 +1832,8 @@ async function applyManualStandingOverrides(
           ''
         );
 
-        const obj = JSON.parse(raw) as ManualStandingOverride;
+        const obj =
+          JSON.parse(raw) as ManualStandingOverride;
 
         if (obj.weekId !== targetWeekId) continue;
 
@@ -1667,7 +1844,8 @@ async function applyManualStandingOverrides(
           continue;
         }
 
-        const key = `${obj.playerId}:${obj.matchType}`;
+        const key =
+          `${obj.playerId}:${obj.matchType}`;
 
         if (!latest.has(key)) {
           latest.set(key, obj);
@@ -1684,49 +1862,174 @@ async function applyManualStandingOverrides(
     }));
 
     const playerIds = new Set(
-      Array.from(latest.values()).map((x) => x.playerId)
+      Array.from(latest.values()).map(
+        (x) => x.playerId
+      )
     );
 
     for (const playerId of playerIds) {
-      let selected: ManualStandingOverride | null = null;
+      const ovrBase =
+        latest.get(`${playerId}:OVR`);
 
-      if (matchType === 'OVR') {
-        selected =
-          latest.get(`${playerId}:OVR`) || null;
+      const tacticalBase =
+        latest.get(`${playerId}:TACTICAL`);
+
+      let selected:
+        | ManualStandingOverride
+        | null = null;
+
+      if (matchType === 'OVR' && ovrBase) {
+        const extra =
+          await getPostPresetStats(
+            playerId,
+            'OVR',
+            targetWeekId,
+            ovrBase.updatedAt
+          );
+
+        selected = {
+          ...ovrBase,
+          points:
+            ovrBase.points + extra.points,
+          matches:
+            ovrBase.matches + extra.matches,
+          wins:
+            ovrBase.wins + extra.wins,
+          draws:
+            ovrBase.draws + extra.draws,
+          losses:
+            ovrBase.losses + extra.losses,
+          goalsFor:
+            ovrBase.goalsFor +
+            extra.goalsFor,
+          goalsAgainst:
+            ovrBase.goalsAgainst +
+            extra.goalsAgainst,
+          goalDifference:
+            ovrBase.goalDifference +
+            extra.goalDifference,
+        };
       }
 
-      if (matchType === 'TACTICAL') {
-        selected =
-          latest.get(`${playerId}:TACTICAL`) || null;
+      if (
+        matchType === 'TACTICAL' &&
+        tacticalBase
+      ) {
+        const extra =
+          await getPostPresetStats(
+            playerId,
+            'TACTICAL',
+            targetWeekId,
+            tacticalBase.updatedAt
+          );
+
+        selected = {
+          ...tacticalBase,
+          points:
+            tacticalBase.points +
+            extra.points,
+          matches:
+            tacticalBase.matches +
+            extra.matches,
+          wins:
+            tacticalBase.wins +
+            extra.wins,
+          draws:
+            tacticalBase.draws +
+            extra.draws,
+          losses:
+            tacticalBase.losses +
+            extra.losses,
+          goalsFor:
+            tacticalBase.goalsFor +
+            extra.goalsFor,
+          goalsAgainst:
+            tacticalBase.goalsAgainst +
+            extra.goalsAgainst,
+          goalDifference:
+            tacticalBase.goalDifference +
+            extra.goalDifference,
+        };
       }
 
-      if (matchType === 'ALL') {
-        const ovr =
-          latest.get(`${playerId}:OVR`);
+      if (
+        matchType === 'ALL' &&
+        ovrBase &&
+        tacticalBase
+      ) {
+        const ovrExtra =
+          await getPostPresetStats(
+            playerId,
+            'OVR',
+            targetWeekId,
+            ovrBase.updatedAt
+          );
 
-        const tactical =
-          latest.get(`${playerId}:TACTICAL`);
+        const tacticalExtra =
+          await getPostPresetStats(
+            playerId,
+            'TACTICAL',
+            targetWeekId,
+            tacticalBase.updatedAt
+          );
 
-        if (ovr && tactical) {
-          const newest =
-            ovr.updatedAt >= tactical.updatedAt
-              ? ovr
-              : tactical;
+        const newest =
+          ovrBase.updatedAt >=
+          tacticalBase.updatedAt
+            ? ovrBase
+            : tacticalBase;
 
-          selected = {
-            ...newest,
-            points: ovr.points + tactical.points,
-            matches: ovr.matches + tactical.matches,
-            wins: ovr.wins + tactical.wins,
-            draws: ovr.draws + tactical.draws,
-            losses: ovr.losses + tactical.losses,
-            goalsFor: ovr.goalsFor + tactical.goalsFor,
-            goalsAgainst:
-              ovr.goalsAgainst + tactical.goalsAgainst,
-            goalDifference:
-              ovr.goalDifference + tactical.goalDifference,
-          };
-        }
+        selected = {
+          ...newest,
+
+          points:
+            ovrBase.points +
+            tacticalBase.points +
+            ovrExtra.points +
+            tacticalExtra.points,
+
+          matches:
+            ovrBase.matches +
+            tacticalBase.matches +
+            ovrExtra.matches +
+            tacticalExtra.matches,
+
+          wins:
+            ovrBase.wins +
+            tacticalBase.wins +
+            ovrExtra.wins +
+            tacticalExtra.wins,
+
+          draws:
+            ovrBase.draws +
+            tacticalBase.draws +
+            ovrExtra.draws +
+            tacticalExtra.draws,
+
+          losses:
+            ovrBase.losses +
+            tacticalBase.losses +
+            ovrExtra.losses +
+            tacticalExtra.losses,
+
+          goalsFor:
+            ovrBase.goalsFor +
+            tacticalBase.goalsFor +
+            ovrExtra.goalsFor +
+            tacticalExtra.goalsFor,
+
+          goalsAgainst:
+            ovrBase.goalsAgainst +
+            tacticalBase.goalsAgainst +
+            ovrExtra.goalsAgainst +
+            tacticalExtra.goalsAgainst,
+
+          goalDifference:
+            ovrBase.goalDifference +
+            tacticalBase.goalDifference +
+            ovrExtra.goalDifference +
+            tacticalExtra.goalDifference,
+        };
       }
 
       if (!selected) continue;
@@ -1734,7 +2037,8 @@ async function applyManualStandingOverrides(
       const existingIndex =
         result.findIndex(
           (entry) =>
-            entry.userId === selected!.playerId
+            entry.userId ===
+            selected!.playerId
         );
 
       const existing =
@@ -1747,18 +2051,28 @@ async function applyManualStandingOverrides(
         userId: selected.playerId,
         username: selected.playerName,
         teamName: selected.teamName,
-        teamOvr: selected.teamOvr,
+
+        // 現在のランキング側OVRがあればそちらを優先
+        teamOvr:
+          existing?.teamOvr ||
+          selected.teamOvr,
+
         points: selected.points,
         matchesCount: selected.matches,
         wins: selected.wins,
         draws: selected.draws,
         losses: selected.losses,
         goalsFor: selected.goalsFor,
-        goalsAgainst: selected.goalsAgainst,
-        goalDifference: selected.goalDifference,
+        goalsAgainst:
+          selected.goalsAgainst,
+        goalDifference:
+          selected.goalDifference,
+
         recent10Matches:
           existing?.recent10Matches || [],
-        season: selected.seasonNumber,
+
+        season:
+          selected.seasonNumber,
       };
 
       if (existingIndex >= 0) {
@@ -1800,10 +2114,12 @@ async function applyManualStandingOverrides(
       );
     });
 
-    return result.map((entry, index) => ({
-      ...entry,
-      rank: index + 1,
-    }));
+    return result.map(
+      (entry, index) => ({
+        ...entry,
+        rank: index + 1,
+      })
+    );
   } catch (e) {
     console.warn(
       'Manual standing override error:',
