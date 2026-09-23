@@ -208,51 +208,16 @@ export const PvPView: React.FC<PvPViewProps> = ({
     return unsub;
   }, [selectedSeason, standingsFilter, userProfile.userId]);
 
-  // Opponents matched in the current week per mode (1 match per week per mode: OVR and TACTICAL each 1 match per week, bidirectional)
-  const [weeklyMatchedOpponents, setWeeklyMatchedOpponents] = useState<WeeklyMatchedOpponentsMap>({
+  // Weekly opponent history remains synchronized for both match modes.
+  const [, setWeeklyMatchedOpponents] = useState<WeeklyMatchedOpponentsMap>({
     ovr: [],
     tactical: [],
     all: [],
   });
   const [matchLimitToast, setMatchLimitToast] = useState<string | null>(null);
 
-  // Helper: check if opponent already played against in current week per mode ('OVR' or 'TACTICAL')
-  const isOpponentMatchedInPhase = (oppUserId: string, mode?: 'OVR' | 'TACTICAL'): boolean => {
-    if (!oppUserId || oppUserId === userProfile.userId) return false;
-
-    if (mode === 'OVR') {
-      if (weeklyMatchedOpponents.ovr.includes(oppUserId)) return true;
-      return matchHistory.some((m) => {
-        const matchInWeek =
-          m.weekId === currentSeasonInfo.weekId ||
-          m.season === currentSeasonInfo.seasonNumber ||
-          (!m.season && !m.weekId);
-        const isPair =
-          (m.challengerUserId === userProfile.userId && m.opponentUserId === oppUserId) ||
-          (m.opponentUserId === userProfile.userId && m.challengerUserId === oppUserId);
-        const isOvr = !String(m.matchType || '').toUpperCase().includes('TACTICAL');
-        return matchInWeek && isPair && isOvr;
-      });
-    }
-
-    if (mode === 'TACTICAL') {
-      if (weeklyMatchedOpponents.tactical.includes(oppUserId)) return true;
-      return matchHistory.some((m) => {
-        const matchInWeek =
-          m.weekId === currentSeasonInfo.weekId ||
-          m.season === currentSeasonInfo.seasonNumber ||
-          (!m.season && !m.weekId);
-        const isPair =
-          (m.challengerUserId === userProfile.userId && m.opponentUserId === oppUserId) ||
-          (m.opponentUserId === userProfile.userId && m.challengerUserId === oppUserId);
-        const isTactical = String(m.matchType || '').toUpperCase().includes('TACTICAL');
-        return matchInWeek && isPair && isTactical;
-      });
-    }
-
-    // When mode is omitted: return true only if BOTH OVR and TACTICAL have been matched
-    return isOpponentMatchedInPhase(oppUserId, 'OVR') && isOpponentMatchedInPhase(oppUserId, 'TACTICAL');
-  };
+  // Rematches are unlimited in both modes, regardless of weekly match history.
+  const isOpponentMatchedInPhase = (_oppUserId: string, _mode?: 'OVR' | 'TACTICAL'): boolean => false;
 
   // Halftime modified tactics
   const [halftimeTactics, setHalftimeTactics] = useState<TeamTactics>(tactics);
@@ -910,7 +875,7 @@ export const PvPView: React.FC<PvPViewProps> = ({
             </h2>
             <p className="text-xs text-slate-300 max-w-xl">
               Supabaseに登録された実在プレイヤーと対戦！ 毎週月曜0:00〜日曜23:59(JST)の週間ランキングを開催中。
-              同じ相手とは【OVR対戦】【戦術対戦】を週に各1回ずつ対戦可能です。
+              同じ相手と【OVR対戦】【戦術対戦】を何回でも対戦可能です。
             </p>
           </div>
 
@@ -1789,7 +1754,7 @@ export const PvPView: React.FC<PvPViewProps> = ({
                                 <button
                                   onClick={() => handleOpenPreMatch(opp, 'OVR', 'REALTIME')}
                                   className="flex-1 py-2 px-3 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white font-heading font-black text-xs tracking-wider shadow-md transition-all flex items-center justify-center gap-1 cursor-pointer"
-                                  title="OVR対戦を開始 (週1回制限)"
+                                  title="OVR対戦を開始"
                                 >
                                   <Zap className="w-3.5 h-3.5 fill-white" />
                                   <span>CHALLENGE</span>
@@ -1805,7 +1770,7 @@ export const PvPView: React.FC<PvPViewProps> = ({
                                 <button
                                   onClick={() => handleOpenPreMatch(opp, 'TACTICAL', 'REALTIME')}
                                   className="py-2 px-3 rounded-xl bg-blue-600/30 hover:bg-blue-600/50 text-blue-200 border border-blue-500/40 text-xs font-bold transition-colors flex items-center justify-center gap-1 cursor-pointer"
-                                  title="戦術対戦を開始 (週1回制限)"
+                                  title="戦術対戦を開始"
                                 >
                                   <Sliders className="w-3.5 h-3.5" />
                                   <span>戦術</span>
@@ -1922,7 +1887,7 @@ export const PvPView: React.FC<PvPViewProps> = ({
                                       ? 'bg-emerald-600/30 hover:bg-emerald-600/50 text-emerald-200 border border-emerald-500/40'
                                       : 'bg-indigo-600/30 hover:bg-indigo-600/50 text-indigo-200 border border-indigo-500/40'
                                   }`}
-                                  title="OVR対戦を開始 (週1回制限)"
+                                  title="OVR対戦を開始"
                                 >
                                   <Zap className="w-3.5 h-3.5" />
                                   <span>{isOnline ? 'CHALLENGE (OVR)' : 'ASYNC (OVR)'}</span>
@@ -1938,7 +1903,7 @@ export const PvPView: React.FC<PvPViewProps> = ({
                                 <button
                                   onClick={() => handleOpenPreMatch(opp, 'TACTICAL', isOnline ? 'REALTIME' : 'ASYNC')}
                                   className="py-2 px-3 rounded-xl bg-blue-600/30 hover:bg-blue-600/50 text-blue-200 border border-blue-500/40 text-xs font-bold transition-colors flex items-center justify-center gap-1 cursor-pointer"
-                                  title="戦術対戦を開始 (週1回制限)"
+                                  title="戦術対戦を開始"
                                 >
                                   <Sliders className="w-3.5 h-3.5" />
                                   <span>戦術対戦</span>
@@ -2170,7 +2135,7 @@ export const PvPView: React.FC<PvPViewProps> = ({
                                     ? 'bg-emerald-600 hover:bg-emerald-500 text-white font-heading font-black'
                                     : 'bg-indigo-600 hover:bg-indigo-500 text-white font-heading font-black'
                                 }`}
-                                title="OVR対戦を開始 (週1回制限)"
+                                title="OVR対戦を開始"
                               >
                                 <Zap className="w-3.5 h-3.5 fill-white" />
                                 <span>{isOnline ? 'CHALLENGE (OVR)' : 'ASYNC (OVR)'}</span>
@@ -2186,7 +2151,7 @@ export const PvPView: React.FC<PvPViewProps> = ({
                               <button
                                 onClick={() => handleOpenPreMatch(user, 'TACTICAL', isOnline ? 'REALTIME' : 'ASYNC')}
                                 className="py-2 px-3 rounded-xl bg-blue-600/30 hover:bg-blue-600/50 text-blue-200 border border-blue-500/40 text-xs font-bold transition-colors flex items-center gap-1 cursor-pointer"
-                                title="戦術対戦を開始 (週1回制限)"
+                                title="戦術対戦を開始"
                               >
                                 <Sliders className="w-3.5 h-3.5" />
                                 <span>戦術対戦</span>

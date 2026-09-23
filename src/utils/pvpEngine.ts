@@ -12,7 +12,7 @@ import {
 import { getPersistentUserId, getSavedUserHandle } from './supabasePvP';
 import { getPlayerHeight } from '../data/playerHeights';
 import { getTeamEffectiveOvr, getPvPSimulationOvr } from './positionEngine';
-import { getTeamEffectiveOvr } from './positionEngine';
+import { getSeasonNumberForTimestamp } from './seasonEngine';
 import {
   getTacticalDefenseSquad,
   getOVRDefenseSquad,
