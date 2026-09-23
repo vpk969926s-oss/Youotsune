@@ -1,3 +1,4 @@
+import { applyAdminRankingAdjustments } from './adminRankingAdjustments';
 import { supabase } from './supabase';
 import {
   BetaUserProfile,
@@ -2141,6 +2142,16 @@ async function applyManualStandingOverrides(
     return standings;
   }
 }
+// Apply administrative points only after normal matches and manual presets are aggregated.
+async function applyStandingAdjustments(
+  standings: BetaStandingEntry[],
+  targetWeekId: string,
+  matchType: 'ALL' | 'OVR' | 'TACTICAL'
+): Promise<BetaStandingEntry[]> {
+  const aggregated = await applyManualStandingOverrides(standings, targetWeekId, matchType);
+  return applyAdminRankingAdjustments(aggregated, matchType);
+}
+
 /**
  * Synchronize any local pending match records to server authority
  */
@@ -2232,7 +2243,7 @@ export async function fetchWeeklyStandingsWithSyncInfo(
         }
 
         return {
-          standings: await applyManualStandingOverrides(
+          standings: await applyStandingAdjustments(
   serverStandings,
   targetWeekId,
   matchType
@@ -2323,7 +2334,7 @@ export async function fetchWeeklyStandingsFromSupabase(
             season: seasonNumber,
           });
         }
-        return await applyManualStandingOverrides(
+        return await applyStandingAdjustments(
   serverStandings,
   targetWeekId,
   matchType
@@ -2403,7 +2414,7 @@ export async function fetchWeeklyStandingsFromSupabase(
   rank: idx + 1,
 }));
 
-return await applyManualStandingOverrides(
+return await applyStandingAdjustments(
   rankedList,
   targetWeekId,
   matchType
@@ -2572,7 +2583,7 @@ return await applyManualStandingOverrides(
   seasonNumber,
   matchType
 );
-return await applyManualStandingOverrides(
+return await applyStandingAdjustments(
   computed,
   targetWeekId,
   matchType
