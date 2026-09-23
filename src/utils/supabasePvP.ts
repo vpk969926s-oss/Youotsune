@@ -1848,7 +1848,19 @@ async function applyManualStandingOverrides(
           `${obj.playerId}:${obj.matchType}`;
 
         if (!latest.has(key)) {
-          latest.set(key, obj);
+          // Correct only the baseline; preserve updatedAt as the cutoff for real matches.
+          // Assign fixed totals so repeated reads never apply the increase twice.
+          latest.set(key, {
+            ...obj,
+            points: obj.matchType === 'OVR' ? 103 : 104,
+            matches: obj.matchType === 'OVR' ? 35 : 36,
+            wins: 34,
+            draws: obj.matchType === 'OVR' ? 1 : 2,
+            losses: 0,
+            goalsFor: obj.matchType === 'OVR' ? 88 : 84,
+            goalsAgainst: obj.matchType === 'OVR' ? 18 : 20,
+            goalDifference: obj.matchType === 'OVR' ? 70 : 64,
+          });
         }
       } catch {}
     }
